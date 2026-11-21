@@ -558,6 +558,7 @@ function confirmText({ name, args = {} }) {
     request_document: `Загрузите ${args.what || 'документ'}: зона загрузки слева подсвечена.`,
     show_map: `Переключил карту в ${String(args.mode || '').toUpperCase()}.`,
     show_geo: '', show_social: '',
+    select_floor: `Выбрал ${args.floor} этаж: он подсвечен на 3D-модели, ниже — план этажа.`, set_unit: `Записал помещение «${args.name || ''}»${args.area_m2 ? `, ${args.area_m2} м²` : ''}.`,
   }[name] ?? '';
 }
 // Tools the model can call (definitions live in server.js). Anything with consequences goes through the permission card.
@@ -593,6 +594,17 @@ async function runAction({ name, args = {} }) {
   if (name === 'request_document') return requestDocument(args.what);
   if (name === 'highlight_rows') return highlightRows(args.type, args.nums || []);
   if (name === 'show_geo') return showGeo(args);
+  if (name === 'select_floor') {
+    if (currentDoc !== 'geo') openDoc('geo');
+    if (!GEO.building) return aiMsg('<p>Сначала кликните по дому на карте: он раскроется по этажам.</p>');
+    if (args.floor > GEO.building.levels) return aiMsg(`<p>В этом доме ${GEO.building.levels} эт. (${esc(GEO.building.levelsSrc)}), ${args.floor}-го нет.</p>`);
+    return selectFloor(args.floor);
+  }
+  if (name === 'set_unit') {
+    if (!GEO.floor) return aiMsg('<p>Сначала выберите здание и этаж на карте.</p>');
+    GEO.unit = { ...(GEO.unit || {}), floor: GEO.floor, name: String(args.name || '').slice(0, 40), area: Number.isFinite(args.area_m2) ? args.area_m2 : GEO.unit?.area ?? null };
+    drawBuilding(); renderBuilding(); renderGeoPanel(); return;
+  }
   if (name === 'show_map') { if (currentDoc !== 'geo') openDoc('geo'); GEO.mode = args.mode; return setMapMode(args.mode); }
   if (name === 'show_social') return showSocial(args);
 }
@@ -880,6 +892,7 @@ function renderGeo() {
     </div>
     <div class="geo-results" id="geoResults" hidden></div>
     <div class="map-wrap"><div id="map"></div><div class="map-hint" id="mapHint">${icon('target', 'sm')}Кликните на карте, где находится предприятие</div></div>
+    <div class="bld" id="bldPanel"></div>
     <div class="geo-panel" id="geoPanel"></div>
   </div>`;
   canvas.scrollTop = 0;
@@ -893,9 +906,18 @@ function renderGeo() {
     geoMap.addLayer({ id: 'radius-line', type: 'line', source: 'radius', paint: { 'line-color': '#ff2e88', 'line-width': 2, 'line-dasharray': [2, 2] } });
     geoMap.addSource('pois', { type: 'geojson', data: emptyFC() });
     geoMap.addLayer({ id: 'pois', type: 'circle', source: 'pois', paint: { 'circle-radius': 5, 'circle-color': ['get', 'color'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+    geoMap.addSource('floors', { type: 'geojson', data: emptyFC() });
+    geoMap.addLayer({ id: 'floors', type: 'fill-extrusion', source: 'floors', paint: { 'fill-extrusion-color': ['match', ['get', 'state'], 'sel', '#ff2e88', 'hov', '#ffb3d1', '#d9d9df'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-opacity': 0.93 } });
+    geoMap.addSource('unit', { type: 'geojson', data: emptyFC() });
+    geoMap.addLayer({ id: 'unit', type: 'fill-extrusion', source: 'unit', paint: { 'fill-extrusion-color': '#ff2e88', 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-opacity': 0.95 } });
+    GEO.baseFilter = GEO.layer3d ? geoMap.getFilter(GEO.layer3d) : null;
+    GEO.baseOpacity = GEO.layer3d ? (geoMap.getPaintProperty(GEO.layer3d, 'fill-extrusion-opacity') ?? 1) : 1;
+    geoMap.on('mousemove', 'floors', e => { const l = e.features[0]?.properties.level; geoMap.getCanvas().style.cursor = 'pointer'; if (l !== floorHover) { floorHover = l; drawBuilding(); } });
+    geoMap.on('mouseleave', 'floors', () => { floorHover = null; geoMap.getCanvas().style.cursor = ''; drawBuilding(); });
     if (GEO.lat) { placeMarker(); drawAnalysis(); }
+    drawBuilding(); renderBuilding();
   });
-  geoMap.on('click', e => setPoint(e.lngLat.lat, e.lngLat.lng, ''));
+  geoMap.on('click', onMapClick);
   $('#mapMode').querySelectorAll('button').forEach(b => b.onclick = () => { GEO.mode = b.dataset.m; setMapMode(GEO.mode); });
   $('#geoType').onchange = e => { GEO.type = e.target.value; if (GEO.lat) analyzeTraffic(); else renderGeoPanel(); };
   $('#geoSearch').onsubmit = async e => { e.preventDefault(); await searchAddress($('#geoQ').value); };
@@ -934,15 +956,17 @@ function placeMarker() {
   geoMarker.setLngLat([GEO.lon, GEO.lat]).addTo(geoMap);
   $('#mapHint')?.classList.add('off');
 }
-async function setPoint(lat, lon, address) {
+async function setPoint(lat, lon, address, opts = {}) {
   const same = GEO.lat && distM(GEO.lat, GEO.lon, +lat, +lon) < 30; // same point: keep the found address
   GEO.address = address || (same ? GEO.address : ''); GEO.lat = +lat; GEO.lon = +lon; GEO.analysis = null;
+  if (GEO.building && !insideBuilding(GEO.lon, GEO.lat)) clearBuilding();
   if (!geoMap) return;
   if (geoMarker) geoMarker.remove(), geoMarker = null;
   placeMarker();
-  geoMap.flyTo({ center: [GEO.lon, GEO.lat], zoom: 16.3, pitch: GEO.mode === '3d' ? 55 : 0, bearing: GEO.mode === '3d' ? -18 : 0, duration: 1400 });
+  if (opts.fly !== false) geoMap.flyTo({ center: [GEO.lon, GEO.lat], zoom: 16.3, pitch: GEO.mode === '3d' ? 55 : 0, bearing: GEO.mode === '3d' ? -18 : 0, duration: 1400 });
   if (!GEO.address) reverseLabel();
   await analyzeTraffic();
+  if (opts.building !== false && !GEO.building) { await waitIdle(); await selectBuildingAt(GEO.lon, GEO.lat); }
 }
 function reverseLabel() { GEO.address = `${GEO.lat.toFixed(5)}, ${GEO.lon.toFixed(5)}`; }
 const distM = (a, b, c, d) => { const R = 6371000, r = Math.PI / 180, x = (d - b) * r * Math.cos((a + c) / 2 * r), y = (c - a) * r; return Math.sqrt(x * x + y * y) * R; };
@@ -993,7 +1017,7 @@ function renderGeoPanel(loading = false) {
       <div class="geo-index ${a.level === 'высокий' ? 'hi' : a.level === 'средний' ? 'mid' : 'lo'}"><span>Индекс проходимости</span><b>${a.index}</b><small>из 100 · ${a.level}</small></div>
       <div class="geo-cats">${CATS.map(c => `<div class="gc"><i style="background:${c.color}"></i><span>${c.nm}</span><em><u style="width:${a.counts[c.k] / max * 100}%;background:${c.color}"></u></em><b>${a.counts[c.k]}</b></div>`).join('')}</div>
     </div>
-    <p class="geo-note">${icon('alert', 'sm')}<span>Это оценка, а не подсчёт людей: ${a.total} точек притяжения из OpenStreetMap в радиусе ${RADIUS} м, взвешенных по типу (остановка ×6, рынок ×8, школа ×4…). ${a.nearestTransit ? `Ближайшая остановка — ${a.nearestTransit.d} м.` : 'Остановок в радиусе нет.'} ${a.total < 5 ? 'Данных OSM вокруг мало, индекс может быть занижен.' : ''}</span></p>`;
+    <p class="geo-note">${icon('alert', 'sm')}<span>Это оценка, а не подсчёт людей: ${a.total} точек притяжения из OpenStreetMap в радиусе ${RADIUS} м, взвешенных по типу (остановка ×6, рынок ×8, школа ×4…). ${a.nearestTransit ? `Ближайшая остановка — ${a.nearestTransit.d} м.` : 'Остановок в радиусе нет.'} ${a.total < 5 ? 'Данных OSM вокруг мало, индекс может быть занижен.' : ''}</span></p>${floorNote() ? `<p class="geo-floor">${icon('layers', 'sm')}<span>${floorNote()}</span></p>` : ''}`;
 }
 function geoReport() {
   const biz = BIZ[GEO.type] || BIZ.retail, a = GEO.analysis;
@@ -1005,7 +1029,8 @@ function geoContext() {
   if (!GEO.lat) return 'Геомодель: адрес предприятия не указан.';
   const biz = BIZ[GEO.type] || BIZ.retail, a = GEO.analysis;
   let t = `Геомодель: предприятие на карте — ${GEO.address} (${GEO.lat.toFixed(5)}, ${GEO.lon.toFixed(5)}), тип: ${biz.nm}. `;
-  if (!a) return t + 'Трафик ещё считается.';
+  if (!a) return t + buildingContext() + 'Трафик ещё считается.';
+  t += buildingContext();
   if (!a.need) return t + `Пешеходный трафик не нужен: ${biz.why}.`;
   return t + `Индекс проходимости ${a.index} из 100 (${a.level}) — оценка по ${a.total} точкам OSM в радиусе ${RADIUS} м, не число людей. ` + CATS.map(c => `${c.nm}: ${a.counts[c.k]}`).join(', ') + (a.nearestTransit ? `. Ближайшая остановка ${a.nearestTransit.d} м.` : '. Остановок рядом нет.');
 }
@@ -1044,4 +1069,192 @@ async function showSocial(x) {
   for (const el of [...page.querySelectorAll('.post')].slice(0, 6)) { el.classList.add('picked'); await cursorTo('k', el, 'читаю', 260, 0.85); await sleep(140); el.classList.remove('picked'); }
   agentBusy('k', false); busy = false; parkCursors(); setStatus('Готово');
   logMsg('k', `снял данные ${x.platform === 'website' ? 'сайта' : 'страницы'}: ${(x.posts || []).length ? (x.posts.length + ' постов') : 'описание'}`);
+}
+
+
+// =====================================================================
+// BUILDING → FLOORS → UNIT: click a house, it opens floor by floor
+// =====================================================================
+const FLOOR_H = 3; // м на этаж, когда этажности нет в OSM
+let floorHover = null, drawing = null;
+GEO.building = null; GEO.floor = null; GEO.unit = null; GEO.plan = null;
+const vecSrc = () => Object.keys(geoMap.getStyle().sources).find(k => geoMap.getStyle().sources[k].type === 'vector');
+const inRing = (x, y, ring) => { let ins = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) ins = !ins; } return ins; };
+const insideBuilding = (lon, lat) => GEO.building && inRing(lon, lat, GEO.building.poly[0]);
+function localXY(lat0, lon0) { const kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540; return { to: ([lon, lat]) => [(lon - lon0) * kx, (lat - lat0) * ky], from: ([x, y]) => [lon0 + x / kx, lat0 + y / ky] }; }
+const ringArea = pts => Math.abs(pts.reduce((s, p, i) => { const q = pts[(i + 1) % pts.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+
+function buildingAt(lon, lat) {
+  let best = null;
+  for (const f of geoMap.querySourceFeatures(vecSrc(), { sourceLayer: 'building' })) {
+    const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [];
+    for (const poly of polys) if (inRing(lon, lat, poly[0])) {
+      const h = +f.properties.render_height || 0;
+      if (!best || h > best.h) best = { id: f.id, poly, h, minH: +f.properties.render_min_height || 0 };
+    }
+  }
+  return best;
+}
+async function onMapClick(e) {
+  const hit = geoMap.queryRenderedFeatures(e.point, { layers: ['floors'] })[0];
+  if (hit) return selectFloor(hit.properties.level);
+  const { lat, lng } = e.lngLat;
+  const ok = await selectBuildingAt(lng, lat);
+  setPoint(lat, lng, '', { fly: !ok, building: false });
+}
+async function selectBuildingAt(lon, lat, { fly = true } = {}) {
+  if (!geoMap) return false;
+  const b = buildingAt(lon, lat);
+  if (!b) return false;
+  if (GEO.building && GEO.building.id === b.id) return true;
+  const ring = b.poly[0], c = ring.reduce((a, p) => [a[0] + p[0] / ring.length, a[1] + p[1] / ring.length], [0, 0]);
+  const L = localXY(c[1], c[0]);
+  GEO.building = { id: b.id, poly: b.poly, height: b.h, minH: b.minH, center: c, footprint: Math.round(ringArea(ring.map(L.to))), osm: null };
+  GEO.floor = null; GEO.unit = null; GEO.plan = null; drawing = null;
+  setLevels(); drawBuilding(); renderBuilding();
+  if (fly) { const xs = ring.map(p => p[0]), ys = ring.map(p => p[1]); geoMap.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 110, pitch: GEO.mode === '3d' ? 60 : 0, bearing: GEO.mode === '3d' ? (geoMap.getBearing() || -18) : 0, maxZoom: 18.6, duration: 1200 }); }
+  const r = await fetch('/api/osm/building?id=' + encodeURIComponent(b.id)).then(x => x.json()).catch(() => ({}));
+  if (!GEO.building || GEO.building.id !== b.id) return true;
+  GEO.building.osm = r.building || null;
+  setLevels(); drawBuilding(); renderBuilding();
+  logMsg('a', `здание: ${GEO.building.levels} эт. (${GEO.building.levelsSrc}), пятно ≈ ${GEO.building.footprint} м²`);
+  return true;
+}
+function setLevels() {
+  const B = GEO.building, t = B.osm?.tags || {}, h = B.height - B.minH;
+  const byH = Math.max(1, Math.round(h / FLOOR_H)), osmL = parseInt(t['building:levels']);
+  B.address = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(', ') || t.name || '';
+  B.warning = '';
+  if (osmL > 0 && (h <= 1 || Math.abs(osmL * FLOOR_H - h) <= Math.max(6, h * 0.5))) { B.levels = osmL; B.levelsSrc = 'OpenStreetMap'; }
+  else if (osmL > 0) { B.levels = byH; B.levelsSrc = `оценка по высоте ${h} м`; B.warning = `В OSM указано ${osmL} эт., но высота дома ${h} м — данные противоречат друг другу, взята оценка по высоте.`; }
+  else { B.levels = byH; B.levelsSrc = `оценка: высота ${h} м, ~${FLOOR_H} м на этаж`; }
+  B.levels = Math.min(B.levels, 120);
+  if (GEO.floor > B.levels) { GEO.floor = null; GEO.unit = null; }
+}
+function floorGeom() { const B = GEO.building, total = Math.max(B.height - B.minH, B.levels * 2.6); return { fh: total / B.levels, base: B.minH }; }
+function floorFeatures() {
+  const B = GEO.building; if (!B) return emptyFC();
+  const { fh, base } = floorGeom();
+  return { type: 'FeatureCollection', features: Array.from({ length: B.levels }, (_, i) => ({ type: 'Feature', geometry: { type: 'Polygon', coordinates: B.poly }, properties: { level: i + 1, base: base + i * fh, top: base + (i + 1) * fh - Math.min(0.4, fh * 0.14), state: i + 1 === GEO.floor ? 'sel' : i + 1 === floorHover ? 'hov' : 'n' } })) };
+}
+function unitFeatures() {
+  const U = GEO.unit; if (!GEO.building || !U?.poly || U.floor !== GEO.floor) return emptyFC();
+  const { fh, base } = floorGeom(), b0 = base + (U.floor - 1) * fh;
+  return { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [U.poly] }, properties: { base: b0 + 0.05, top: b0 + fh * 0.86 } }] };
+}
+function drawBuilding() {
+  if (!geoMap || !geoMap.getSource('floors')) return;
+  geoMap.getSource('floors').setData(floorFeatures());
+  geoMap.getSource('unit').setData(unitFeatures());
+  geoMap.setPaintProperty('floors', 'fill-extrusion-opacity', GEO.unit?.poly ? 0.45 : 0.93);
+  const L = GEO.layer3d; if (!L) return;
+  const hide = GEO.building ? ['!=', ['id'], GEO.building.id] : null;
+  geoMap.setFilter(L, hide ? (GEO.baseFilter ? ['all', GEO.baseFilter, hide] : hide) : (GEO.baseFilter || null));
+  geoMap.setPaintProperty(L, 'fill-extrusion-opacity', GEO.building ? 0.3 : GEO.baseOpacity);
+}
+function clearBuilding() { GEO.building = null; GEO.floor = null; GEO.unit = null; GEO.plan = null; drawing = null; drawBuilding(); renderBuilding(); renderGeoPanel(); }
+function selectFloor(n) {
+  if (!GEO.building) return;
+  GEO.floor = +n; if (GEO.unit && GEO.unit.floor !== GEO.floor) GEO.unit = null; drawing = null;
+  drawBuilding(); renderBuilding(); renderGeoPanel();
+  if (geoMap && GEO.mode === '3d') geoMap.easeTo({ pitch: 62, duration: 600 });
+  $('#bldPanel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function floorNote() {
+  if (!GEO.floor || !GEO.analysis?.need) return '';
+  return GEO.floor === 1 ? '1 этаж: вход прямо с улицы, поток прохожих доступен — индекс применим полностью.'
+    : `${GEO.floor} этаж: прохожие с улицы заходят редко. Индекс описывает окружение, а не ваш поток — важнее вывеска, заметный вход и онлайн-продвижение.`;
+}
+function buildingContext() {
+  const B = GEO.building; if (!B) return 'Здание на карте не выбрано. ';
+  let t = `Здание: ${B.address || 'адрес в OSM не указан'}, ${B.levels} эт. (${B.levelsSrc}), высота ${B.height - B.minH} м, пятно застройки ${B.footprint} м². `;
+  if (B.warning) t += B.warning + ' ';
+  if (GEO.floor) t += `Выбран ${GEO.floor}-й этаж. `;
+  if (GEO.unit) t += `Помещение: ${GEO.unit.name || 'без номера'}${GEO.unit.area ? `, ${GEO.unit.area} м²` : ''}${GEO.unit.poly ? ' (контур нарисован на плане)' : ''}. `;
+  return t;
+}
+
+// ---------- panel: building card, floors, floor plan ----------
+function renderBuilding() {
+  const el = $('#bldPanel'); if (!el) return;
+  const B = GEO.building;
+  $('#mapHint')?.classList.toggle('off', !!(B || GEO.lat));
+  if (!B) { el.innerHTML = `<div class="bld-empty">${icon('layers', 'sm')}<span>Кликните по дому на карте — он раскроется по этажам, и можно будет выбрать этаж и помещение.</span></div>`; return; }
+  const floors = Array.from({ length: B.levels }, (_, i) => B.levels - i);
+  el.innerHTML = `<div class="bld-card">
+      <div class="bld-h">${icon('home', 'sm')}<div><b>${esc(B.address || 'Здание без адреса в OSM')}</b><small>${B.levels} эт. · ${esc(B.levelsSrc)} · пятно ≈ ${B.footprint} м²${B.osm ? ` · <a href="${esc(B.osm.url)}" target="_blank" rel="noopener">OSM</a>` : ''}</small></div><button class="btn btn-ghost btn-icon btn-sm" id="bldX" title="Снять выбор">${icon('x', 'sm')}</button></div>
+      ${B.warning ? `<p class="bld-warn">${icon('alert', 'sm')}<span>${esc(B.warning)}</span></p>` : ''}
+      <div class="bld-body">
+        <div class="lift">${floors.map(f => `<button data-f="${f}" class="${f === GEO.floor ? 'on' : ''}">${f}</button>`).join('')}</div>
+        <div class="plan" id="planBox">${GEO.floor ? planHtml() : `<div class="plan-empty">${icon('layers')}<span>Выберите этаж: кнопкой слева или кликом по этажу на 3D-модели</span></div>`}</div>
+      </div></div>`;
+  $('#bldX').onclick = () => clearBuilding();
+  el.querySelectorAll('.lift button').forEach(b => b.onclick = () => selectFloor(+b.dataset.f));
+  if (GEO.floor) wirePlan();
+}
+function planHtml() {
+  const U = GEO.unit && GEO.unit.floor === GEO.floor ? GEO.unit : null;
+  return `<div class="plan-h"><b>План ${GEO.floor} этажа</b>
+      <label class="btn btn-outline btn-sm">${icon('upload', 'sm')}Загрузить план<input type="file" id="planFile" accept="image/*" hidden></label>
+      ${GEO.plan ? `<button class="btn btn-ghost btn-sm" id="planRot">${icon('undo', 'sm')}90°</button>` : ''}
+      <button class="btn ${drawing ? 'btn-primary' : 'btn-outline'} btn-sm" id="planDraw">${icon('shapes', 'sm')}${drawing ? 'Кликайте углы…' : 'Нарисовать помещение'}</button></div>
+    <svg id="planSvg" class="${drawing ? 'drawing' : ''}"></svg>
+    <p class="hint-s">${drawing ? 'Кликайте по углам помещения. Чтобы закончить, кликните по первой точке или дважды.' : GEO.plan ? 'План вписан в контур дома. Нарисуйте своё помещение поверх него.' : 'Контур этажа — настоящий, из OpenStreetMap. Загрузите план из техпаспорта или договора аренды, чтобы выбрать помещение точно.'}</p>
+    <form class="unit-f" id="unitForm"><input id="unitName" placeholder="№ помещения или квартиры" value="${esc(U?.name || '')}"><input id="unitArea" type="number" step="0.1" min="0" placeholder="Площадь, м²" value="${U?.area ?? ''}"><button class="btn btn-primary btn-sm">Сохранить</button></form>
+    ${U ? `<div class="unit-ok">${icon('check', 'sm')}Помещение ${esc(U.name || 'без номера')} · ${GEO.floor} этаж${U.area ? ` · ${U.area} м²` : ''}${U.poly ? ' · контур на 3D-модели' : ''}</div>` : ''}`;
+}
+function wirePlan() {
+  const svg = $('#planSvg'), B = GEO.building, L = localXY(B.center[1], B.center[0]);
+  const rings = B.poly.map(r => r.map(L.to)), xs = rings[0].map(p => p[0]), ys = rings[0].map(p => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const W = 640, H = 340, pad = 20, k = Math.min((W - 2 * pad) / (maxX - minX || 1), (H - 2 * pad) / (maxY - minY || 1));
+  const ox = (W - (maxX - minX) * k) / 2, oy = (H - (maxY - minY) * k) / 2;
+  const sx = x => ox + (x - minX) * k, sy = y => H - (oy + (y - minY) * k); // north up
+  const ux = X => (X - ox) / k + minX, uy = Y => (H - Y - oy) / k + minY;
+  const path = rings.map(r => 'M' + r.map(p => `${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join('L') + 'Z').join('');
+  const U = GEO.unit && GEO.unit.floor === GEO.floor ? GEO.unit : null;
+  const unitPts = U?.poly ? U.poly.slice(0, -1).map(L.to).map(p => [sx(p[0]), sy(p[1])]) : null;
+  const bx = sx(minX), by = sy(maxY), bw = (maxX - minX) * k, bh = (maxY - minY) * k;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = `<defs><clipPath id="fpClip"><path d="${path}" clip-rule="evenodd"/></clipPath></defs>
+    ${GEO.plan ? `<image href="${GEO.plan.url}" x="${bx}" y="${by}" width="${bw}" height="${bh}" preserveAspectRatio="none" opacity="0.8" transform="rotate(${GEO.plan.rot} ${bx + bw / 2} ${by + bh / 2})" clip-path="url(#fpClip)"/>` : ''}
+    <path d="${path}" fill="${GEO.plan ? 'none' : '#f4f4f5'}" fill-rule="evenodd" stroke="#0a0a0b" stroke-width="2.5"/>
+    ${unitPts ? `<polygon points="${unitPts.map(p => p.join(',')).join(' ')}" fill="rgba(255,46,136,.28)" stroke="#ff2e88" stroke-width="2.5"/>` : ''}
+    ${drawing ? `<polyline points="${drawing.map(p => p.join(',')).join(' ')}" fill="none" stroke="#ff2e88" stroke-width="2.5" stroke-dasharray="6 4"/>${drawing.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="${i ? 4 : 7}" fill="${i ? '#ff2e88' : '#fff'}" stroke="#ff2e88" stroke-width="2.5"/>`).join('')}` : ''}
+    <text x="${W - 14}" y="22" text-anchor="end" font-size="12" fill="#6b6b73">N ↑ · 10 м = ${(10 * k).toFixed(0)} px</text>`;
+  const pt = e => { const m = svg.getScreenCTM().inverse(), q = new DOMPoint(e.clientX, e.clientY).matrixTransform(m); return [q.x, q.y]; };
+  const finish = () => {
+    if (!drawing || drawing.length < 3) { drawing = null; renderBuilding(); return; }
+    const ring = drawing.map(([X, Y]) => L.from([ux(X), uy(Y)]));
+    ring.push(ring[0]);
+    const area = Math.round(ringArea(drawing.map(([X, Y]) => [ux(X), uy(Y)])) * 10) / 10;
+    GEO.unit = { ...(GEO.unit || {}), floor: GEO.floor, poly: ring, area: GEO.unit?.area ?? area, drawnArea: area };
+    drawing = null; drawBuilding(); renderBuilding(); renderGeoPanel();
+    logMsg('a', `помещение отмечено на ${GEO.floor} этаже, по контуру ≈ ${area} м²`);
+  };
+  svg.onclick = e => {
+    if (!drawing) return;
+    const p = pt(e);
+    if (drawing.length >= 3 && Math.hypot(p[0] - drawing[0][0], p[1] - drawing[0][1]) < 12) return finish();
+    drawing.push(p); renderBuilding();
+  };
+  svg.ondblclick = e => { e.preventDefault(); if (drawing) { drawing.pop(); finish(); } };
+  $('#planDraw').onclick = () => { drawing = drawing ? null : []; renderBuilding(); };
+  $('#planRot')?.addEventListener('click', () => { GEO.plan.rot = (GEO.plan.rot + 90) % 360; renderBuilding(); });
+  $('#planFile').onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    if (!/^image\//.test(f.type)) return toast('Нужна картинка плана: PNG или JPG', 'alert');
+    if (GEO.plan) URL.revokeObjectURL(GEO.plan.url);
+    GEO.plan = { url: URL.createObjectURL(f), rot: 0, name: f.name };
+    addDoc('Геомодель', { id: 'plan-' + GEO.floor, nm: `План ${GEO.floor} этажа · ${f.name}`.slice(0, 50), tag: 'план', cls: 'new', ic: 'image' });
+    currentDoc = 'geo'; renderTree(); renderBuilding();
+    logMsg('a', `план ${GEO.floor} этажа вписан в контур дома`);
+  };
+  $('#unitForm').onsubmit = e => {
+    e.preventDefault();
+    const area = parseFloat($('#unitArea').value);
+    GEO.unit = { ...(GEO.unit || {}), floor: GEO.floor, name: $('#unitName').value.trim(), area: Number.isFinite(area) ? area : null };
+    drawBuilding(); renderBuilding(); renderGeoPanel();
+    logMsg('a', `помещение ${GEO.unit.name || 'без номера'}, ${GEO.floor} этаж${GEO.unit.area ? ', ' + GEO.unit.area + ' м²' : ''}`);
+  };
 }

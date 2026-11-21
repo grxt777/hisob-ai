@@ -211,3 +211,32 @@ table.dt th{background:var(--bg-soft);font-weight:600}
 .post .pm span{display:inline-flex;align-items:center;gap:4px}
 .post p{margin:0;font-size:13.5px;white-space:pre-wrap}
 @media (max-width:640px){.geo-grid{grid-template-columns:1fr}.gc{grid-template-columns:10px 120px 1fr 24px}.map-wrap{height:340px}}
+
+/* building → floors → unit */
+.bld{margin-top:14px}
+.bld-empty{display:flex;gap:9px;align-items:center;padding:11px 14px;border-radius:14px;border:1px dashed var(--line-strong);font-size:13px;color:var(--muted)}
+.bld-card{border:1px solid var(--line);border-radius:18px;padding:14px;background:#fff}
+.bld-h{display:flex;gap:10px;align-items:flex-start}
+.bld-h>div{flex:1;min-width:0}
+.bld-h b{display:block;font-size:14px}
+.bld-h small{color:var(--muted);font-size:12px}
+.bld-h a{color:var(--ink);text-decoration:underline}
+.bld-warn{display:flex;gap:8px;font-size:12.5px;background:#fff7ed;color:#7c2d12;border-radius:10px;padding:8px 10px;margin:10px 0 0}
+.bld-warn .i{color:#f59e0b;flex:none;margin-top:1px}
+.bld-body{display:grid;grid-template-columns:52px 1fr;gap:12px;margin-top:12px}
+.lift{display:flex;flex-direction:column;gap:4px;max-height:420px;overflow:auto;padding:4px;border-radius:14px;background:var(--bg-soft);border:1px solid var(--line)}
+.lift button{height:30px;border-radius:9px;border:1px solid var(--line);background:#fff;font-weight:600;font-size:12.5px;cursor:pointer;font-variant-numeric:tabular-nums;flex:none}
+.lift button:hover{border-color:var(--pink);color:var(--pink)}
+.lift button.on{background:var(--pink);border-color:var(--pink);color:#fff}
+.plan-empty{height:100%;min-height:160px;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13px;border:1px dashed var(--line-strong);border-radius:14px;padding:16px}
+.plan-h{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.plan-h b{margin-right:auto;font-size:14px}
+.plan-h label{cursor:pointer}
+#planSvg{width:100%;height:auto;aspect-ratio:640/340;border:1px solid var(--line);border-radius:14px;background:repeating-linear-gradient(0deg,#fafafa 0 19px,#f1f1f3 19px 20px),repeating-linear-gradient(90deg,transparent 0 19px,#f1f1f3 19px 20px)}
+#planSvg.drawing{cursor:crosshair;box-shadow:0 0 0 3px rgba(255,46,136,.2)}
+.unit-f{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.unit-f input{flex:1;min-width:130px;height:36px;border:1px solid var(--line-strong);border-radius:10px;padding:0 10px;font-size:13px}
+.unit-ok{display:flex;gap:7px;align-items:center;margin-top:8px;font-size:13px;font-weight:600;color:var(--ok)}
+.geo-floor{display:flex;gap:8px;font-size:12.5px;color:var(--ink-2);margin:8px 0 0;line-height:1.5}
+.geo-floor .i{flex:none;margin-top:2px;color:var(--pink)}
+@media (max-width:640px){.bld-body{grid-template-columns:44px 1fr}}

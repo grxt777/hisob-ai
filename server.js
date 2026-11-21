@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { queryInvoices, calculate, socialMonitor, geocode } from './lib/tools.js';
+import { queryInvoices, calculate, socialMonitor, geocode, osmBuilding } from './lib/tools.js';
 import { loadMcp, mcpToolDefs, isMcpTool, callMcp, mcpStatus } from './lib/mcp.js';
 
 const DIR = fileURLToPath(new URL('.', import.meta.url));
@@ -35,6 +35,7 @@ const SYSTEM = `Ты менеджер AI-команды бухгалтерии �
 - «Покажи как PDF», «скачай», «сохрани в Word/Excel» — export_document (если документа ещё нет, сначала create_document в том же ответе).
 - Вопросы по продажам, покупкам, контрагентам, датам («кто крупнейший покупатель», «сколько купили у…») — query_invoices. Любые расчёты (налоги, проценты, «а если») — calculate. Не считай в уме.
 - Соцсети и сайты (Telegram-канал, Instagram, сайт конкурента или свой) — social_monitor: настоящие публичные данные через браузер. Для сложных сайтов есть инструменты браузера mcp_playwright_*.
+- Здание, этаж, помещение: пользователь кликает дом на карте, видит его по этажам; этаж — select_floor, номер и площадь помещения — set_unit (площадь только со слов пользователя или с его плана).
 - Геомодель: где находится предприятие, карта, трафик — locate_business (адрес или координаты и тип бизнеса). Если адрес неизвестен, вызови locate_business без адреса: пользователь отметит точку на карте. Карта 2D/3D — show_map. Трафик модель считает сама и только для бизнеса, которому он нужен.
 - «Главный экран», «отчёт», «расчёт», «hisobot» = расчёт НДС: open_document vat-10, а если отчёт не собран — build_vat_report. show_home только по явной просьбе «на старт».
 - Не задавай много уточнений: если просят документ, сразу сделай черновик, неизвестные поля оставь «________» и предложи дополнить.
@@ -49,7 +50,7 @@ const VOICE = '\nПользователь говорит голосом: отв�
 const EXPLAIN_KEYS = ['sb', 'sv', 'pb', 'pv', 'pay', 'simp', 'save', 'turn', 'annual', 'b2b'];
 const SECTIONS = ['sales', 'purchases', 'totals', 'regimes', 'risks'];
 const BUSINESS_TYPES = ['bakery', 'retail', 'horeca', 'beauty', 'pharmacy', 'education', 'auto', 'office', 'production', 'online'];
-const CLIENT_TOOLS = ['show_map', 'build_vat_report', 'open_document', 'show_deadlines', 'explain_number', 'prepare_actions', 'show_home', 'show_section', 'create_document', 'export_document', 'set_reminder', 'request_document'];
+const CLIENT_TOOLS = ['select_floor', 'set_unit', 'show_map', 'build_vat_report', 'open_document', 'show_deadlines', 'explain_number', 'prepare_actions', 'show_home', 'show_section', 'create_document', 'export_document', 'set_reminder', 'request_document'];
 const SERVER_TOOLS = ['query_invoices', 'calculate', 'social_monitor', 'locate_business'];
 
 function tools(docs) { return baseTools(docs).concat(mcpToolDefs()); }
@@ -78,6 +79,8 @@ function baseTools(docs) {
     fn('social_monitor', 'Открыть публичную страницу в браузере (Playwright) и снять данные: Telegram-канал (подписчики, последние посты, просмотры), Instagram-профиль, любой сайт. Результат покажется на холсте.', { platform: S('площадка', { enum: ['telegram', 'instagram', 'website'] }), handle: S('@канал, ник или адрес сайта') }, ['platform', 'handle']),
     fn('locate_business', 'Геомодель: показать предприятие на карте и оценить пешеходный трафик (если он нужен этому типу бизнеса). Можно передать адрес (найдём координаты), координаты, или ничего — тогда пользователь отметит точку на карте сам.', { address: S('адрес или ориентир в Узбекистане'), lat: { type: 'number' }, lon: { type: 'number' }, business_type: S('bakery пекарня, retail магазин, horeca кафе/ресторан, beauty салон/клиника, pharmacy аптека, education учебный центр, auto автосервис, office офис, production производство/склад, online онлайн', { enum: BUSINESS_TYPES }) }),
     fn('show_map', 'Переключить карту геомодели в 2D или 3D.', { mode: S('режим', { enum: ['2d', '3d'] }) }, ['mode']),
+    fn('select_floor', 'Выбрать этаж в выбранном здании на карте (3D-модель по этажам).', { floor: { type: 'integer', description: 'номер этажа, 1 — первый' } }, ['floor']),
+    fn('set_unit', 'Записать помещение предприятия на выбранном этаже: номер и площадь со слов пользователя.', { name: S('номер или название помещения'), area_m2: { type: 'number', description: 'площадь, м² — только если пользователь назвал' } }, ['name']),
     fn('calculate', 'Точный калькулятор. Только числа и + - * / ( ) %. Например "445215206*0.06" или "(53425825-12813484)*12".', { expression: S('выражение'), label: S('что считаем') }, ['expression']),
   ];
 }
@@ -128,6 +131,7 @@ function validClient(x, docs) {
   if (x.name === 'show_section') return SECTIONS.includes(x.args.section);
   if (x.name === 'create_document') return typeof x.args.body === 'string' && x.args.body.trim().length > 0;
   if (x.name === 'show_map') return ['2d', '3d'].includes(x.args.mode);
+  if (x.name === 'select_floor') return Number.isInteger(x.args.floor) && x.args.floor >= 1 && x.args.floor <= 200;
   if (x.name === 'export_document') return ['pdf', 'docx', 'xlsx'].includes(x.args.format);
   return true;
 }
@@ -238,6 +242,7 @@ function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'applicati
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/chat' && req.method === 'POST') return chat(req, res);
+  if (url.pathname === '/api/osm/building') return send(res, 200, { building: await osmBuilding(url.searchParams.get('id')).catch(() => null) });
   if (url.pathname === '/api/geo/search') { const q = url.searchParams.get('q') || ''; return send(res, 200, { results: q.trim() ? await geocode(q).catch(() => []) : [] }); }
   const p = normalize(decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname)).replace(/^(\.\.[/\\])+/, '');
   try {
