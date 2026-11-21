@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hisob AI — рабочее пространство</title>
+<link rel="stylesheet" href="/assets/styles.css">
+<link rel="stylesheet" href="/assets/cowork.css">
+<link rel="stylesheet" href="/assets/hisob.css">
+<script src="/assets/icons.js"></script>
+<script src="/assets/app.js"></script>
+<script src="/assets/data.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+</head>
+<body>
+<div class="cw" id="cw">
+  <!-- top bar -->
+  <header class="tb">
+    <span class="tb-home"><span class="logo"><span class="mark"><svg viewBox="0 0 24 24" class="i" style="stroke:#fff;width:16px;height:16px"><use href="#i-mark"/></svg></span></span></span>
+    <div class="tb-name"><span class="muted">Компании /</span><b id="coName"></b><span class="chip hide-md" id="coInn"></span></div>
+    <span class="spacer"></span>
+    <div class="status" id="status"><span class="dot"></span><span id="statusTxt">Готов к работе</span></div>
+    <span class="spacer"></span>
+    <div class="agents" id="agentsBar"></div>
+    <div class="tb-sep"></div>
+    <button class="btn btn-outline btn-sm" id="resetBtn" title="Начать демо заново"><svg class="i sm"><use href="#i-undo"/></svg><span class="hide-sm">Заново</span></button>
+    <button class="btn btn-primary btn-sm" id="export" disabled><svg class="i sm"><use href="#i-download"/></svg><span class="hide-sm">Excel</span></button>
+    <button class="btn btn-ghost btn-icon btn-sm show-sm" id="chatToggle"><svg class="i sm"><use href="#i-chat"/></svg></button>
+  </header>
+
+  <!-- tools -->
+  <nav class="tools" id="tools">
+    <button data-tool="select" class="on" aria-label="Курсор" data-tip="Курсор" data-key="V" data-desc="Обычный режим: читать и листать документ"><svg class="i"><use href="#i-cursor"/></svg></button>
+    <button data-tool="ai" class="tool-ai" aria-label="ИИ-курсор" data-tip="ИИ-курсор" data-key="A" data-desc="Отметьте любое место в документе, хоть несколько, и спросите о нём в чате. Правый клик: сразу объяснить"><svg class="i"><use href="#i-ai-cursor"/></svg></button>
+    <button id="micTool" aria-label="Голос" data-tip="Голос" data-key="M" data-desc="Скажите задачу голосом, по-узбекски или по-русски"><svg class="i"><use href="#i-mic"/></svg></button>
+    <span class="tools-sep"></span>
+    <button id="uploadTool" aria-label="Загрузить" data-tip="Загрузить" data-desc="Отчёты, выписки, Excel и докладные: всё ляжет в Документы"><svg class="i"><use href="#i-upload"/></svg></button>
+    <span class="spacer"></span>
+  </nav>
+
+  <!-- left panel -->
+  <aside class="lp">
+    <div class="lp-tabs">
+      <button class="on" data-tab="docs"><svg class="i sm"><use href="#i-folder"/></svg>Документы</button>
+      <button data-tab="dates"><svg class="i sm"><use href="#i-calendar"/></svg>Сроки <span class="count" id="dateCount">0</span></button>
+    </div>
+    <div class="lp-body" data-pane="docs">
+      <div class="tree" id="tree"></div>
+      <label class="drop sm" id="drop">
+        <input type="file" id="file" multiple hidden>
+        <span class="drop-ic"><svg class="i"><use href="#i-upload"/></svg></span>
+        <b>Перетащите отчёты, выписки, Excel</b>
+        <span>Агенты прочитают и разложат по папкам</span>
+      </label>
+      <div class="regime" id="regimeBox"></div>
+    </div>
+    <div class="lp-body" data-pane="dates" hidden>
+      <div class="dates" id="dates"></div>
+      <p class="hint-s">Сроки — демо-данные. Перед питчем сверить с Налоговым кодексом.</p>
+    </div>
+  </aside>
+
+  <!-- canvas -->
+  <section class="canvas" id="canvas">
+    <div class="canvas-inner" id="inner">
+      <div class="frame" id="frame">
+        <div class="frame-bar"><div class="dots"><i></i><i></i><i></i></div><div class="frame-url" id="frameUrl">hisob.ai</div></div>
+        <div class="page" id="page"></div>
+        <div class="start" id="start">
+          <div class="start-ic"><svg class="i xl"><use href="#i-sparkle"/></svg></div>
+          <h2>Что сделаем сегодня?</h2>
+          <p>Скажите или напишите задачу. Бухгалтер, юрист и аналитик сделают её у вас на глазах.</p>
+          <form class="start-form glow" id="startForm">
+            <textarea id="startInput" rows="2" placeholder="Подготовь расчёт НДС за октябрь и найди, где я переплачиваю"></textarea>
+            <div class="row"><button type="button" class="btn btn-ghost btn-sm" id="startMic"><svg class="i sm"><use href="#i-mic"/></svg>Голосом</button><span class="spacer"></span><button class="btn btn-primary btn-sm">Начать <svg class="i sm"><use href="#i-arrow-up"/></svg></button></div>
+          </form>
+          <div class="start-chips" id="startChips"></div>
+        </div>
+      </div>
+      <div class="overlay" id="overlay">
+        <div class="hover-box ai" id="hoverBox"><span class="hb-tag" id="hoverTag"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- chat -->
+  <aside class="chat" id="chat">
+    <div class="chat-h">
+      <div><b>AI-команда</b><span class="muted">Менеджер ведёт, агенты делают</span></div>
+      <span class="spacer"></span>
+      <button class="btn btn-ghost btn-icon btn-sm" id="ttsBtn" title="Озвучивать ответы"><svg class="i sm"><use href="#i-volume"/></svg></button>
+      <button class="btn btn-ghost btn-icon btn-sm show-sm" id="chatClose"><svg class="i sm"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="msgs" id="msgs"></div>
+    <form class="composer glow" id="composer">
+      <div class="listening" id="listening" hidden><span class="wave"><i></i><i></i><i></i><i></i><i></i></span><span id="listenTxt">Слушаю…</span></div>
+      <div class="attached" id="attached"></div>
+      <textarea id="chatInput" rows="1" placeholder="Спросите про налоги, отчёты, сроки…"></textarea>
+      <div class="row">
+        <button type="button" class="btn btn-ghost btn-sm" id="micBtn" title="Сказать голосом"><svg class="i sm"><use href="#i-mic"/></svg><span id="langLbl">UZ</span></button>
+        <button type="button" class="btn btn-ghost btn-sm" id="pickBtn" title="Отметить место в документе ИИ-курсором"><svg class="i sm"><use href="#i-ai-cursor"/></svg>Отметить</button>
+        <span class="spacer"></span>
+        <button class="btn btn-primary btn-icon btn-sm" id="sendBtn" title="Отправить"><svg class="i sm"><use href="#i-arrow-up"/></svg></button>
+      </div>
+    </form>
+  </aside>
+</div>
+
+<!-- explain popover -->
+<div class="pop" id="pop" hidden>
+  <div class="pop-h">
+    <span class="pop-ic"><svg class="i sm"><use href="#i-ai-cursor"/></svg></span>
+    <b id="popTitle"></b>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost btn-icon btn-sm" id="popClose"><svg class="i sm"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="pop-val" id="popVal"></div>
+  <div class="pop-explain" id="popExplain"></div>
+  <div class="pop-sugg" id="popSugg"></div>
+  <div class="pop-f"><button class="btn btn-outline btn-sm" id="popAsk"><svg class="i sm"><use href="#i-chat"/></svg>Спросить в чате</button></div>
+</div>
+
+<script src="/assets/hisob.js"></script>
+</body>
+</html>
