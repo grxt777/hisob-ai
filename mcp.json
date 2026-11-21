@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "playwright": {
+      "command": "node",
+      "args": ["${ROOT}/node_modules/@playwright/mcp/cli.js", "--headless", "--isolated"],
+      "allow": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_wait_for", "browser_navigate_back"]
+    }
+  }
+}

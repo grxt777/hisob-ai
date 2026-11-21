@@ -14,7 +14,8 @@ const AGENTS = [
   { id: 'm', name: 'Менеджер', color: '#0a0a0b', role: 'ведёт задачу' },
   { id: 'b', name: 'Бухгалтер', color: '#ff2e88', role: 'ЭСФ и расчёты' },
   { id: 'y', name: 'Юрист', color: '#71717a', role: 'нормы и риски' },
-  { id: 'a', name: 'Аналитик', color: '#2563eb', role: 'режимы и прогноз' },
+  { id: 'a', name: 'Аналитик', color: '#2563eb', role: 'режимы, прогноз, геомодель' },
+  { id: 'k', name: 'Маркетолог', color: '#f59e0b', role: 'соцсети и конкуренты' },
 ];
 const A = Object.fromEntries(AGENTS.map(a => [a.id, a]));
 
@@ -45,6 +46,9 @@ const DOCS = [
   { g: 'Отчёты', items: [
     { id: 'vat-09', nm: 'Расчёт НДС · сентябрь', tag: 'сдан', cls: 'ok', ic: 'sheet' },
     { id: 'profit-q3', nm: 'Налог на прибыль · III кв', tag: 'сдан', cls: 'ok', ic: 'sheet' },
+  ] },
+  { g: 'Геомодель', items: [
+    { id: 'geo', nm: 'Карта предприятия', tag: '2D/3D', ic: 'globe' },
   ] },
   { g: 'Прочее', items: [
     { id: 'rent', nm: 'Договор аренды цеха', tag: 'DOCX', ic: 'file' },
@@ -144,10 +148,11 @@ async function reveal(sec) {
   await sleep(450);
 }
 function countTo(el, to, ms = 900, f = fmt) {
-  const t0 = performance.now();
+  // timer-driven, not requestAnimationFrame: rAF stops in hidden/background tabs and would freeze the scenario
+  const t0 = Date.now();
   return new Promise(res => {
-    const step = t => { const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3); el.textContent = f(to * e); k < 1 ? requestAnimationFrame(step) : res(); };
-    requestAnimationFrame(step);
+    const step = () => { const k = Math.min(1, (Date.now() - t0) / ms), e = 1 - Math.pow(1 - k, 3); el.textContent = f(to * e); k < 1 ? setTimeout(step, 16) : res(); };
+    step();
   });
 }
 function showStart(on) { $('#start').hidden = !on; }
@@ -218,6 +223,7 @@ const applicationDoc = () => letterDoc({
 
 function openDoc(id) {
   closePop(); if (targets.length) clearTargets();
+  if (geoMap && id !== 'geo') { geoMap.remove(); geoMap = null; }
   currentDoc = id; renderTree(); showStart(false);
   const item = DOCS.flatMap(g => g.items).find(x => x.id === id);
   $('#frameUrl').textContent = item ? item.nm : 'hisob.ai';
@@ -226,6 +232,8 @@ function openDoc(id) {
   else if (id === 'esf-p') page.innerHTML = `<div class="doc"><div class="doc-h"><div><h1>ЭСФ · покупки</h1><p>${D.purchases.length} счетов-фактур за ${CO.period}</p></div></div><div class="tbl-wrap" style="max-height:none"><table class="rg"><thead>${headP}</thead><tbody>${D.purchases.map(rowP).join('')}</tbody><tfoot><tr><td colspan="5">Итого</td><td class="n" data-x="pb">${fmt(C.pb)}</td><td class="n" data-x="pv">${fmt(C.pv)}</td><td></td></tr></tfoot></table></div></div>`;
   else if (id === 'app-6') page.innerHTML = applicationDoc();
   else if (id === 'vat-09' || id === 'profit-q3') page.innerHTML = letterDoc({ title: item.nm, chip: 'Сдан · демо-данные', sign: false, body: `<p>Отчёт за прошлый период хранится здесь, чтобы агенты сравнивали динамику: рост продаж, изменение НДС к уплате, сезонность.</p><p class="muted">В рабочей версии сюда подгружается документ из кабинета налоговой или загруженный вами файл.</p>` });
+  else if (id === 'geo') { renderGeo(); return; }
+  else if (SOCIAL[id]) page.innerHTML = socialHtml(id);
   else if (CREATED[id]) page.innerHTML = createdDocHtml(id);
   else page.innerHTML = letterDoc({ title: item ? item.nm : 'Документ', chip: 'Файл не загружен в демо', sign: false, body: `<p>Здесь будет содержимое загруженного файла. В демо это заглушка без данных.</p><p>Загрузите настоящий документ через «Загрузить» слева, и агенты используют его: юрист — договоры, бухгалтер — выписки и докладные.</p>` });
   canvas.scrollTop = 0;
@@ -548,6 +556,8 @@ function confirmText({ name, args = {} }) {
     export_document: '',
     set_reminder: `Добавил напоминание на ${args.date || ''}.`,
     request_document: `Загрузите ${args.what || 'документ'}: зона загрузки слева подсвечена.`,
+    show_map: `Переключил карту в ${String(args.mode || '').toUpperCase()}.`,
+    show_geo: '', show_social: '',
   }[name] ?? '';
 }
 // Tools the model can call (definitions live in server.js). Anything with consequences goes through the permission card.
@@ -582,6 +592,9 @@ async function runAction({ name, args = {} }) {
   if (name === 'set_reminder') return setReminder(args.date, args.text);
   if (name === 'request_document') return requestDocument(args.what);
   if (name === 'highlight_rows') return highlightRows(args.type, args.nums || []);
+  if (name === 'show_geo') return showGeo(args);
+  if (name === 'show_map') { if (currentDoc !== 'geo') openDoc('geo'); GEO.mode = args.mode; return setMapMode(args.mode); }
+  if (name === 'show_social') return showSocial(args);
 }
 
 // ---------- documents written by the model ----------
@@ -619,6 +632,7 @@ async function createDocument(a) {
   closePop(); if (targets.length) clearTargets();
   currentDoc = id; renderTree(); showStart(false);
   $('#frameUrl').textContent = CREATED[id].title + ' · черновик';
+  if (geoMap) { geoMap.remove(); geoMap = null; }
   page.innerHTML = createdDocHtml(id); canvas.scrollTop = 0;
   // the agent "writes" the document block by block
   const who = /отч|акт|справ/.test(CREATED[id].kind) ? 'b' : 'y';
@@ -740,6 +754,8 @@ async function askBackend(voice = false) {
     `Документы в пространстве: ${DOCS.flatMap(g => g.items).map(x => x.nm).join(', ')}.`,
     `Сейчас на холсте открыт: ${currentDoc ? (DOCS.flatMap(g => g.items).find(x => x.id === currentDoc)?.nm || currentDoc) : 'стартовый экран'}.`,
     `Сегодня: ${new Date().toLocaleDateString('ru-RU')}.`,
+    geoContext(),
+    ...Object.values(SOCIAL).map(x => `Соцсеть ${x.platform} ${x.handle ? '@' + x.handle : x.url}: ${x.title || ''}; ${JSON.stringify(x.counters || x.summary || '')}; последние посты: ${(x.posts || []).slice(0, 5).map(p => `${p.date} просмотры ${p.views}: ${p.text.slice(0, 60)}`).join(' | ')}`),
     `Неизвестно (не называть цифры): зарплаты, цены на рынке, расходы на бухгалтера, прибыль, данные других компаний. ФИО руководителя, адрес, банковские реквизиты, список сотрудников — неизвестны.`,
     `Файлы-заглушки без содержимого (в демо не загружены): Банковская выписка · окт, Договор аренды цеха, Докладная · инвентаризация.`,
     ...(Object.keys(CREATED).length ? ['Созданные документы (id, название, текст):', ...Object.entries(CREATED).map(([k, v]) => `[${k}] ${v.title}:\n${v.md.slice(0, 1500)}`)] : []),
@@ -820,3 +836,212 @@ addEventListener('keydown', e => {
 
 welcome();
 parkCursors();
+
+
+// =====================================================================
+// GEO MODEL: where the business is, 2D/3D map, foot-traffic index
+// =====================================================================
+let geoMap = null, geoMarker = null;
+const GEO = { lat: null, lon: null, address: '', type: 'bakery', mode: '3d', analysis: null, picking: false };
+const BIZ = {
+  bakery:     { nm: 'Пекарня, кондитерская', need: true,  why: 'покупатели приходят с улицы' },
+  retail:     { nm: 'Магазин, торговля',     need: true,  why: 'выручка зависит от проходящих людей' },
+  horeca:     { nm: 'Кафе, ресторан, фастфуд', need: true, why: 'гости приходят с улицы' },
+  beauty:     { nm: 'Салон, барбершоп, клиника', need: true, why: 'часть клиентов приходит без записи' },
+  pharmacy:   { nm: 'Аптека',                need: true,  why: 'покупки по пути' },
+  education:  { nm: 'Учебный центр',         need: true,  why: 'видимость для родителей и учеников рядом' },
+  auto:       { nm: 'Автосервис, мойка',     need: false, why: 'важен автомобильный, а не пешеходный трафик' },
+  office:     { nm: 'Офис, IT, консалтинг',  need: false, why: 'клиенты не приходят с улицы' },
+  production: { nm: 'Производство, склад',   need: false, why: 'клиенты не приходят с улицы' },
+  online:     { nm: 'Онлайн-магазин',        need: false, why: 'продажи идут через интернет' },
+};
+// OpenMapTiles POI classes -> categories that attract people. Weights are the model's assumptions, shown in the UI.
+const CATS = [
+  { k: 'transit',   nm: 'Остановки, метро',  w: 6,   cls: ['bus', 'railway', 'aerialway'], color: '#2563eb' },
+  { k: 'market',    nm: 'Рынки',             w: 8,   cls: ['marketplace'], color: '#dc2626' },
+  { k: 'edu',       nm: 'Школы, вузы, сады', w: 4,   cls: ['school', 'college', 'kindergarten', 'university', 'library'], color: '#7c3aed' },
+  { k: 'health',    nm: 'Медицина, аптеки',  w: 3,   cls: ['hospital', 'pharmacy', 'doctors', 'dentist', 'clinic'], color: '#059669' },
+  { k: 'food',      nm: 'Кафе, рестораны',   w: 2,   cls: ['fast_food', 'cafe', 'restaurant', 'bar', 'beer', 'ice_cream'], color: '#f59e0b' },
+  { k: 'shop',      nm: 'Магазины',          w: 2,   cls: ['shop', 'grocery', 'clothing_store', 'alcohol_shop', 'bakery', 'butcher', 'jewelry', 'mobile_phone', 'furniture', 'shoes', 'gift', 'books', 'hardware', 'electronics', 'florist', 'optician', 'beauty', 'hairdresser', 'convenience', 'supermarket', 'department_store', 'mall', 'laundry'], color: '#ff2e88' },
+  { k: 'finance',   nm: 'Банки, банкоматы',  w: 1,   cls: ['bank', 'atm'], color: '#0891b2' },
+  { k: 'attract',   nm: 'Парки, мечети, ТЦ, культура', w: 3, cls: ['attraction', 'theatre', 'cinema', 'stadium', 'park', 'place_of_worship', 'town_hall', 'museum', 'art_gallery'], color: '#65a30d' },
+];
+const RADIUS = 300;
+
+function renderGeo() {
+  currentDoc = 'geo'; renderTree(); showStart(false);
+  $('#frameUrl').textContent = 'Геомодель · карта предприятия';
+  page.innerHTML = `<div class="doc geo">
+    <div class="doc-h"><div><h1>Где находится ваше предприятие</h1><p>${CO.name} · кликните на карте или найдите адрес</p></div>
+      <div class="seg" id="mapMode"><button data-m="2d">2D</button><button data-m="3d">3D</button></div></div>
+    <div class="geo-bar">
+      <form id="geoSearch" class="geo-search">${icon('search', 'sm')}<input id="geoQ" placeholder="Адрес или ориентир: Чиланзар 9 квартал, рынок Алайский…" autocomplete="off"><button class="btn btn-primary btn-sm">Найти</button></form>
+      <select id="geoType">${Object.entries(BIZ).map(([k, v]) => `<option value="${k}" ${k === GEO.type ? 'selected' : ''}>${v.nm}</option>`).join('')}</select>
+    </div>
+    <div class="geo-results" id="geoResults" hidden></div>
+    <div class="map-wrap"><div id="map"></div><div class="map-hint" id="mapHint">${icon('target', 'sm')}Кликните на карте, где находится предприятие</div></div>
+    <div class="geo-panel" id="geoPanel"></div>
+  </div>`;
+  canvas.scrollTop = 0;
+  if (!window.maplibregl) { $('#geoPanel').innerHTML = '<p class="muted">Карта не загрузилась: нет доступа к интернету.</p>'; return; }
+  geoMap = new maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/liberty', center: GEO.lat ? [GEO.lon, GEO.lat] : [69.2797, 41.3111], zoom: GEO.lat ? 16 : 12, pitch: GEO.mode === '3d' ? 55 : 0, bearing: GEO.mode === '3d' ? -18 : 0, attributionControl: { compact: true } });
+  geoMap.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+  geoMap.on('load', () => {
+    ensure3d(); setMapMode(GEO.mode, true);
+    geoMap.addSource('radius', { type: 'geojson', data: emptyFC() });
+    geoMap.addLayer({ id: 'radius-fill', type: 'fill', source: 'radius', paint: { 'fill-color': '#ff2e88', 'fill-opacity': 0.08 } });
+    geoMap.addLayer({ id: 'radius-line', type: 'line', source: 'radius', paint: { 'line-color': '#ff2e88', 'line-width': 2, 'line-dasharray': [2, 2] } });
+    geoMap.addSource('pois', { type: 'geojson', data: emptyFC() });
+    geoMap.addLayer({ id: 'pois', type: 'circle', source: 'pois', paint: { 'circle-radius': 5, 'circle-color': ['get', 'color'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+    if (GEO.lat) { placeMarker(); drawAnalysis(); }
+  });
+  geoMap.on('click', e => setPoint(e.lngLat.lat, e.lngLat.lng, ''));
+  $('#mapMode').querySelectorAll('button').forEach(b => b.onclick = () => { GEO.mode = b.dataset.m; setMapMode(GEO.mode); });
+  $('#geoType').onchange = e => { GEO.type = e.target.value; if (GEO.lat) analyzeTraffic(); else renderGeoPanel(); };
+  $('#geoSearch').onsubmit = async e => { e.preventDefault(); await searchAddress($('#geoQ').value); };
+  renderGeoPanel();
+}
+const emptyFC = () => ({ type: 'FeatureCollection', features: [] });
+function ensure3d() {
+  const has = geoMap.getStyle().layers.find(l => l.type === 'fill-extrusion');
+  if (has) { GEO.layer3d = has.id; return; }
+  const src = Object.keys(geoMap.getStyle().sources).find(k => geoMap.getStyle().sources[k].type === 'vector');
+  geoMap.addLayer({ id: 'hisob-3d', type: 'fill-extrusion', source: src, 'source-layer': 'building', minzoom: 14, paint: { 'fill-extrusion-color': '#d9d9de', 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0], 'fill-extrusion-opacity': 0.85 } });
+  GEO.layer3d = 'hisob-3d';
+}
+function setMapMode(mode, instant = false) {
+  GEO.mode = mode;
+  document.querySelectorAll('#mapMode button').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+  if (!geoMap || !geoMap.isStyleLoaded()) return;
+  if (GEO.layer3d) geoMap.setLayoutProperty(GEO.layer3d, 'visibility', mode === '3d' ? 'visible' : 'none');
+  geoMap.easeTo({ pitch: mode === '3d' ? 55 : 0, bearing: mode === '3d' ? -18 : 0, duration: instant ? 0 : 900 });
+}
+async function searchAddress(q) {
+  q = String(q || '').trim(); if (!q) return;
+  const box = $('#geoResults'); box.hidden = false; box.innerHTML = '<div class="muted">Ищу…</div>';
+  const r = await fetch('/api/geo/search?q=' + encodeURIComponent(q)).then(x => x.json()).catch(() => ({ results: [] }));
+  if (!r.results.length) { box.innerHTML = '<div class="muted">Не нашёл. Кликните на карте, где находится предприятие.</div>'; return; }
+  box.innerHTML = r.results.map((x, i) => `<button data-i="${i}">${icon('target', 'sm')}<span>${esc(x.name)}</span></button>`).join('');
+  box.querySelectorAll('button').forEach(b => b.onclick = () => { const x = r.results[+b.dataset.i]; box.hidden = true; setPoint(x.lat, x.lon, x.name); });
+}
+function placeMarker() {
+  if (!geoMap) return;
+  if (!geoMarker) {
+    const el = document.createElement('div'); el.className = 'geo-pin'; el.innerHTML = `<span>${icon('home', 'sm')}</span>`;
+    geoMarker = new maplibregl.Marker({ element: el, draggable: true, anchor: 'bottom' });
+    geoMarker.on('dragend', () => { const p = geoMarker.getLngLat(); setPoint(p.lat, p.lng, ''); });
+  }
+  geoMarker.setLngLat([GEO.lon, GEO.lat]).addTo(geoMap);
+  $('#mapHint')?.classList.add('off');
+}
+async function setPoint(lat, lon, address) {
+  const same = GEO.lat && distM(GEO.lat, GEO.lon, +lat, +lon) < 30; // same point: keep the found address
+  GEO.address = address || (same ? GEO.address : ''); GEO.lat = +lat; GEO.lon = +lon; GEO.analysis = null;
+  if (!geoMap) return;
+  if (geoMarker) geoMarker.remove(), geoMarker = null;
+  placeMarker();
+  geoMap.flyTo({ center: [GEO.lon, GEO.lat], zoom: 16.3, pitch: GEO.mode === '3d' ? 55 : 0, bearing: GEO.mode === '3d' ? -18 : 0, duration: 1400 });
+  if (!GEO.address) reverseLabel();
+  await analyzeTraffic();
+}
+function reverseLabel() { GEO.address = `${GEO.lat.toFixed(5)}, ${GEO.lon.toFixed(5)}`; }
+const distM = (a, b, c, d) => { const R = 6371000, r = Math.PI / 180, x = (d - b) * r * Math.cos((a + c) / 2 * r), y = (c - a) * r; return Math.sqrt(x * x + y * y) * R; };
+function circle(lat, lon, m) { const pts = []; for (let i = 0; i <= 64; i++) { const t = i / 64 * 2 * Math.PI; pts.push([lon + m / (111320 * Math.cos(lat * Math.PI / 180)) * Math.cos(t), lat + m / 110540 * Math.sin(t)]); } return { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [pts] }, properties: {} }] }; }
+const waitIdle = () => new Promise(r => { if (geoMap.loaded() && !geoMap.isMoving()) setTimeout(r, 300); else geoMap.once('idle', () => r()); });
+
+async function analyzeTraffic() {
+  const biz = BIZ[GEO.type] || BIZ.retail;
+  renderGeoPanel(true);
+  if (!biz.need) { GEO.analysis = { need: false }; drawAnalysis(); renderGeoPanel(); geoReport(); return; }
+  if (!geoMap) return;
+  setStatus('Аналитик считает трафик', true); agentBusy('a', true);
+  await new Promise(r => setTimeout(r, 1500)); await waitIdle();
+  const src = Object.keys(geoMap.getStyle().sources).find(k => geoMap.getStyle().sources[k].type === 'vector');
+  const seen = new Set(), found = [];
+  for (const f of geoMap.querySourceFeatures(src, { sourceLayer: 'poi' })) {
+    if (f.geometry.type !== 'Point') continue;
+    const [lon, lat] = f.geometry.coordinates, key = (f.properties.name || '') + lon.toFixed(5) + lat.toFixed(5);
+    if (seen.has(key)) continue; seen.add(key);
+    const d = distM(GEO.lat, GEO.lon, lat, lon); if (d > RADIUS) continue;
+    const cls = f.properties.subclass === 'marketplace' ? 'marketplace' : f.properties.class;
+    const cat = CATS.find(c => c.cls.includes(cls)) || CATS.find(c => c.cls.includes(f.properties.subclass));
+    found.push({ lat, lon, d: Math.round(d), name: f.properties.name || '', cat: cat ? cat.k : 'other' });
+  }
+  const counts = Object.fromEntries(CATS.map(c => [c.k, found.filter(x => x.cat === c.k).length]));
+  const other = found.filter(x => x.cat === 'other').length;
+  const score = CATS.reduce((s, c) => s + counts[c.k] * c.w, 0) + other * 0.3;
+  const index = Math.round(100 * (1 - Math.exp(-score / 100))); // ~80 at a big bazaar, ~20 on a quiet street
+  GEO.analysis = { need: true, index, level: index >= 60 ? 'высокий' : index >= 30 ? 'средний' : 'низкий', counts, other, total: found.length, points: found, nearestTransit: found.filter(x => x.cat === 'transit').sort((a, b) => a.d - b.d)[0] || null };
+  agentBusy('a', false); setStatus('Геомодель готова');
+  drawAnalysis(); renderGeoPanel(); geoReport();
+}
+function drawAnalysis() {
+  if (!geoMap || !geoMap.getSource('radius')) return;
+  const a = GEO.analysis;
+  geoMap.getSource('radius').setData(GEO.lat && a?.need ? circle(GEO.lat, GEO.lon, RADIUS) : emptyFC());
+  geoMap.getSource('pois').setData({ type: 'FeatureCollection', features: (a?.points || []).map(p => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lon, p.lat] }, properties: { color: (CATS.find(c => c.k === p.cat) || { color: '#a1a1aa' }).color } })) });
+}
+function renderGeoPanel(loading = false) {
+  const el = $('#geoPanel'); if (!el) return;
+  const biz = BIZ[GEO.type] || BIZ.retail, a = GEO.analysis;
+  if (!GEO.lat) { el.innerHTML = `<div class="geo-empty">${icon('target')}<div><b>Точка не выбрана</b><span>Найдите адрес или кликните на карте. Тип бизнеса: ${esc(biz.nm)} — трафик ${biz.need ? 'будет посчитан' : 'не нужен'}.</span></div></div>`; return; }
+  const head = `<div class="geo-addr">${icon('home', 'sm')}<span><b>${esc(GEO.address)}</b><small>${esc(biz.nm)}</small></span></div>`;
+  if (loading) { el.innerHTML = head + '<div class="sk-line" style="width:70%"></div><div class="sk-line" style="width:45%"></div>'; return; }
+  if (!a || !a.need) { el.innerHTML = head + `<div class="geo-skip">${icon('check', 'sm')}<span>Пешеходный трафик для этого типа бизнеса не считаем: ${esc(biz.why)}.</span></div>`; return; }
+  const max = Math.max(1, ...CATS.map(c => a.counts[c.k]));
+  el.innerHTML = head + `<div class="geo-grid">
+      <div class="geo-index ${a.level === 'высокий' ? 'hi' : a.level === 'средний' ? 'mid' : 'lo'}"><span>Индекс проходимости</span><b>${a.index}</b><small>из 100 · ${a.level}</small></div>
+      <div class="geo-cats">${CATS.map(c => `<div class="gc"><i style="background:${c.color}"></i><span>${c.nm}</span><em><u style="width:${a.counts[c.k] / max * 100}%;background:${c.color}"></u></em><b>${a.counts[c.k]}</b></div>`).join('')}</div>
+    </div>
+    <p class="geo-note">${icon('alert', 'sm')}<span>Это оценка, а не подсчёт людей: ${a.total} точек притяжения из OpenStreetMap в радиусе ${RADIUS} м, взвешенных по типу (остановка ×6, рынок ×8, школа ×4…). ${a.nearestTransit ? `Ближайшая остановка — ${a.nearestTransit.d} м.` : 'Остановок в радиусе нет.'} ${a.total < 5 ? 'Данных OSM вокруг мало, индекс может быть занижен.' : ''}</span></p>`;
+}
+function geoReport() {
+  const biz = BIZ[GEO.type] || BIZ.retail, a = GEO.analysis;
+  if (!a) return;
+  if (!a.need) { logMsg('a', `геомодель: точка на карте; трафик не нужен — ${biz.why}`); return; }
+  logMsg('a', `геомодель: индекс проходимости ${a.index}/100 (${a.level}), ${a.total} точек притяжения в ${RADIUS} м`);
+}
+function geoContext() {
+  if (!GEO.lat) return 'Геомодель: адрес предприятия не указан.';
+  const biz = BIZ[GEO.type] || BIZ.retail, a = GEO.analysis;
+  let t = `Геомодель: предприятие на карте — ${GEO.address} (${GEO.lat.toFixed(5)}, ${GEO.lon.toFixed(5)}), тип: ${biz.nm}. `;
+  if (!a) return t + 'Трафик ещё считается.';
+  if (!a.need) return t + `Пешеходный трафик не нужен: ${biz.why}.`;
+  return t + `Индекс проходимости ${a.index} из 100 (${a.level}) — оценка по ${a.total} точкам OSM в радиусе ${RADIUS} м, не число людей. ` + CATS.map(c => `${c.nm}: ${a.counts[c.k]}`).join(', ') + (a.nearestTransit ? `. Ближайшая остановка ${a.nearestTransit.d} м.` : '. Остановок рядом нет.');
+}
+async function showGeo(a = {}) {
+  if (a.business_type && BIZ[a.business_type]) GEO.type = a.business_type;
+  if (currentDoc !== 'geo') openDoc('geo');
+  if (Number.isFinite(a.lat) && Number.isFinite(a.lon)) {
+    const go = () => setPoint(a.lat, a.lon, a.address || '');
+    geoMap && geoMap.loaded() ? go() : geoMap?.once('load', go);
+  } else {
+    if (a.query) { $('#geoQ').value = a.query; searchAddress(a.query); }
+    toast('Кликните на карте, где находится предприятие', 'target');
+  }
+}
+
+// =====================================================================
+// SOCIAL: what the marketer read with Playwright
+// =====================================================================
+const SOCIAL = {};
+function socialHtml(id) {
+  const x = SOCIAL[id];
+  const counters = Object.entries(x.counters || {}).filter(([k, v]) => k && v).map(([k, v]) => `<span class="chip">${esc(v)} ${esc(k)}</span>`).join('');
+  const posts = (x.posts || []).map(p => `<div class="post"><div class="pm"><span>${esc(p.date || '')}</span>${p.views ? `<span>${icon('eye', 'sm')}${esc(p.views)}</span>` : ''}</div><p>${esc(p.text)}</p></div>`).join('');
+  return `<div class="doc"><div class="doc-h"><div><h1>${esc(x.title || x.handle || x.url)}</h1><p>${esc(x.platform)} · <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url)}</a> · снято браузером ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</p></div></div>
+    ${counters ? `<div class="soc-c">${counters}</div>` : ''}
+    ${x.description || x.summary ? `<p class="soc-d">${esc(x.description || x.summary)}</p>` : ''}
+    ${posts ? `<div class="sec-h"><span class="who" style="background:${A.k.color}">М</span><h3>Последние посты</h3><span class="meta">${(x.posts || []).length}</span></div><div class="posts">${posts}</div>` : ''}
+    ${x.text ? `<p class="soc-d">${esc(x.text.slice(0, 900))}</p>` : ''}</div>`;
+}
+async function showSocial(x) {
+  const id = 'soc-' + String(x.handle || x.url || 'site').replace(/[^\w.-]/g, '').slice(0, 40);
+  SOCIAL[id] = x;
+  addDoc('Соцсети', { id, nm: (x.platform === 'telegram' ? 'Telegram · @' : x.platform === 'instagram' ? 'Instagram · @' : 'Сайт · ') + (x.handle || x.url.replace(/^https?:\/\//, '').slice(0, 30)), tag: 'live', cls: 'new', ic: 'globe' });
+  openDoc(id);
+  busy = true; agentBusy('k', true); setStatus('Маркетолог разбирает страницу', true);
+  for (const el of [...page.querySelectorAll('.post')].slice(0, 6)) { el.classList.add('picked'); await cursorTo('k', el, 'читаю', 260, 0.85); await sleep(140); el.classList.remove('picked'); }
+  agentBusy('k', false); busy = false; parkCursors(); setStatus('Готово');
+  logMsg('k', `снял данные ${x.platform === 'website' ? 'сайта' : 'страницы'}: ${(x.posts || []).length ? (x.posts.length + ' постов') : 'описание'}`);
+}

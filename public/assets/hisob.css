@@ -166,3 +166,48 @@ table.dt th{background:var(--bg-soft);font-weight:600}
 .exporting .tbl-wrap{max-height:none!important;overflow:visible!important;box-shadow:none!important}
 .exporting .picked{outline:none!important;background:none!important}
 .exporting .chip.draft{display:none}
+
+/* geo model */
+.geo .doc-h .seg{margin-left:auto}
+.geo-bar{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.geo-search{flex:1;min-width:260px;display:flex;align-items:center;gap:8px;border:1px solid var(--line-strong);border-radius:14px;padding:4px 4px 4px 12px;background:#fff}
+.geo-search input{flex:1;border:0;outline:0;font-size:14px;background:transparent;min-width:0}
+.geo-bar select{border:1px solid var(--line-strong);border-radius:14px;padding:0 12px;font-size:13.5px;background:#fff;height:44px}
+.geo-results{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;border:1px solid var(--line);border-radius:14px;padding:6px}
+.geo-results button{display:flex;gap:8px;align-items:flex-start;text-align:left;border:0;background:transparent;padding:8px;border-radius:10px;cursor:pointer;font-size:13px}
+.geo-results button:hover{background:var(--bg-mute)}
+.map-wrap{position:relative;height:460px;border-radius:16px;overflow:hidden;border:1px solid var(--line)}
+#map{position:absolute;inset:0}
+.map-hint{position:absolute;left:50%;top:14px;transform:translateX(-50%);display:flex;gap:7px;align-items:center;background:var(--ink);color:#fff;font-size:13px;font-weight:600;padding:8px 14px;border-radius:99px;box-shadow:var(--sh-2);pointer-events:none;transition:opacity .3s}
+.map-hint .i{color:var(--pink)}
+.map-hint.off{opacity:0}
+.geo-pin{width:34px;height:34px;border-radius:50% 50% 50% 4px;transform:rotate(-45deg);background:var(--pink);box-shadow:0 6px 16px rgba(255,46,136,.5);display:grid;place-items:center;border:2px solid #fff;cursor:grab}
+.geo-pin span{transform:rotate(45deg);color:#fff;display:grid}
+.geo-panel{margin-top:14px}
+.geo-addr{display:flex;gap:9px;align-items:flex-start;margin-bottom:12px;font-size:13.5px}
+.geo-addr small{display:block;color:var(--muted)}
+.geo-empty,.geo-skip{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:14px;background:var(--bg-soft);border:1px solid var(--line);font-size:13.5px}
+.geo-empty span{display:block;color:var(--muted)}
+.geo-skip{background:#e9f8ef;border-color:#c9ecd6;color:#14532d}
+.geo-grid{display:grid;grid-template-columns:170px 1fr;gap:12px}
+.geo-index{border-radius:16px;padding:16px;background:var(--ink);color:#fff;display:flex;flex-direction:column;justify-content:center}
+.geo-index span,.geo-index small{font-size:12px;color:#a1a1aa}
+.geo-index b{font-size:44px;letter-spacing:-.04em;line-height:1.1}
+.geo-index.hi b{color:#4ade80}.geo-index.mid b{color:#fbbf24}.geo-index.lo b{color:#f87171}
+.geo-cats{display:flex;flex-direction:column;gap:5px;border:1px solid var(--line);border-radius:16px;padding:12px 14px}
+.gc{display:grid;grid-template-columns:10px 170px 1fr 28px;gap:8px;align-items:center;font-size:12.5px}
+.gc i{width:10px;height:10px;border-radius:50%}
+.gc em{height:7px;border-radius:9px;background:var(--bg-mute);overflow:hidden}
+.gc em u{display:block;height:100%;border-radius:9px;transition:width .8s var(--ease)}
+.gc b{text-align:right;font-variant-numeric:tabular-nums}
+.geo-note{display:flex;gap:8px;font-size:12.5px;color:var(--muted);margin:12px 0 0;line-height:1.5}
+.geo-note .i{flex:none;margin-top:2px;color:#f59e0b}
+/* social */
+.soc-c{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.soc-d{font-size:13.5px;color:var(--ink-2);white-space:pre-wrap}
+.posts{display:flex;flex-direction:column;gap:8px}
+.post{border:1px solid var(--line);border-radius:14px;padding:10px 13px}
+.post .pm{display:flex;gap:12px;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.post .pm span{display:inline-flex;align-items:center;gap:4px}
+.post p{margin:0;font-size:13.5px;white-space:pre-wrap}
+@media (max-width:640px){.geo-grid{grid-template-columns:1fr}.gc{grid-template-columns:10px 120px 1fr 24px}.map-wrap{height:340px}}

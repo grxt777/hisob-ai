@@ -2,5 +2,14 @@
   "name": "hisob-ai",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.js" }
+  "scripts": {
+    "start": "node server.js",
+    "mcp": "node mcp-server.js",
+    "test:mcp": "node test/mcp-server.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@playwright/mcp": "^0.0.86",
+    "playwright": "^1.65.1"
+  }
 }
