@@ -767,7 +767,7 @@ async function askBackend(voice = false) {
     `Сейчас на холсте открыт: ${currentDoc ? (DOCS.flatMap(g => g.items).find(x => x.id === currentDoc)?.nm || currentDoc) : 'стартовый экран'}.`,
     `Сегодня: ${new Date().toLocaleDateString('ru-RU')}.`,
     geoContext(),
-    ...Object.values(SOCIAL).map(x => `Соцсеть ${x.platform} ${x.handle ? '@' + x.handle : x.url}: ${x.title || ''}; ${JSON.stringify(x.counters || x.summary || '')}; последние посты: ${(x.posts || []).slice(0, 5).map(p => `${p.date} просмотры ${p.views}: ${p.text.slice(0, 60)}`).join(' | ')}`),
+    ...Object.values(SOCIAL).map(x => `Соцсеть ${x.platform} @${x.handle || x.url} (${x.title || ''}): подписчики ${x.followers ?? '—'}; ${x.stats ? `разобрано ${x.stats.posts_analyzed} постов, средние ${x.stats.metric} ${x.stats['avg_' + x.stats.metric]}, медиана ${x.stats['median_' + x.stats.metric]}, вовлечённость ${x.stats.engagement_pct}%, постов в неделю ${x.stats.posts_per_week}; лучший формат ${x.stats.by_type[0]?.key} (${x.stats.by_type[0]?.avg}); лучший день ${x.stats.by_weekday[0]?.key}` : 'только публичные счётчики'}${x.advice?.summary ? '; вывод маркетолога: ' + x.advice.summary : ''}`),
     `Неизвестно (не называть цифры): зарплаты, цены на рынке, расходы на бухгалтера, прибыль, данные других компаний. ФИО руководителя, адрес, банковские реквизиты, список сотрудников — неизвестны.`,
     `Файлы-заглушки без содержимого (в демо не загружены): Банковская выписка · окт, Договор аренды цеха, Докладная · инвентаризация.`,
     ...(Object.keys(CREATED).length ? ['Созданные документы (id, название, текст):', ...Object.entries(CREATED).map(([k, v]) => `[${k}] ${v.title}:\n${v.md.slice(0, 1500)}`)] : []),
@@ -1050,27 +1050,63 @@ async function showGeo(a = {}) {
 // SOCIAL: what the marketer read with Playwright
 // =====================================================================
 const SOCIAL = {};
+const nf = n => n == null ? '—' : Math.round(n).toLocaleString('ru-RU');
+const TYPE_COLOR = { фото: '#ff2e88', видео: '#2563eb', альбом: '#7c3aed', текст: '#71717a', медиа: '#a1a1aa', опрос: '#f59e0b', файл: '#059669', голос: '#0891b2', reels: '#2563eb', карусель: '#7c3aed' };
 function socialHtml(id) {
-  const x = SOCIAL[id];
-  const counters = Object.entries(x.counters || {}).filter(([k, v]) => k && v).map(([k, v]) => `<span class="chip">${esc(v)} ${esc(k)}</span>`).join('');
-  const posts = (x.posts || []).map(p => `<div class="post"><div class="pm"><span>${esc(p.date || '')}</span>${p.views ? `<span>${icon('eye', 'sm')}${esc(p.views)}</span>` : ''}</div><p>${esc(p.text)}</p></div>`).join('');
-  return `<div class="doc"><div class="doc-h"><div><h1>${esc(x.title || x.handle || x.url)}</h1><p>${esc(x.platform)} · <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url)}</a> · снято браузером ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</p></div></div>
-    ${counters ? `<div class="soc-c">${counters}</div>` : ''}
+  const x = SOCIAL[id], st = x.stats, m = st?.metric || 'views';
+  const mName = { views: 'просмотры', reach: 'охват', likes: 'лайки' }[m] || m;
+  const rKey = x.platform === 'instagram' ? 'interactions' : 'reactions';
+  const posts = x.posts || [];
+  const kpi = st ? `<div class="kpis">
+      <div class="kpi"><span>Подписчики</span><b>${nf(x.followers)}</b></div>
+      <div class="kpi"><span>Постов разобрано</span><b>${st.posts_analyzed}</b><small>${st.period ? esc(st.period.from.slice(5, 10) + ' — ' + st.period.to.slice(5, 10)) : ''}</small></div>
+      <div class="kpi"><span>Средние ${mName}</span><b>${nf(st['avg_' + m])}</b><small>медиана ${nf(st['median_' + m])}</small></div>
+      <div class="kpi"><span>Вовлечённость</span><b>${st.engagement_pct ?? '—'}%</b><small>реакции к ${mName}</small></div>
+      <div class="kpi"><span>Охват подписчиков</span><b>${st.reach_pct_of_followers ?? '—'}%</b><small>${mName} / подписчики</small></div>
+      <div class="kpi"><span>Частота</span><b>${st.posts_per_week ?? '—'}</b><small>постов в неделю</small></div>
+    </div>` : '';
+  // bar chart: every post, oldest → newest, colored by type
+  const chrono = posts.filter(p => p[m] != null).slice().reverse(), max = Math.max(1, ...chrono.map(p => p[m]));
+  const chart = chrono.length ? `<div class="sec-h"><span class="who" style="background:${A.k.color}">М</span><h3>${mName[0].toUpperCase() + mName.slice(1)} каждого поста</h3><span class="meta">${chrono.length} постов · цвет — формат</span></div>
+    <div class="pchart">${chrono.map(p => `<a href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc((p.date || '') + ' · ' + p.type + ' · ' + nf(p[m]) + ' ' + mName + '\n' + (p.text || '').slice(0, 90))}" style="height:${Math.max(3, p[m] / max * 100)}%;background:${TYPE_COLOR[p.type] || '#a1a1aa'}"></a>`).join('')}</div>
+    <div class="plegend">${[...new Set(chrono.map(p => p.type))].map(t => `<span><i style="background:${TYPE_COLOR[t] || '#a1a1aa'}"></i>${esc(t)}</span>`).join('')}</div>` : '';
+  const bars = (title, rows, label = r => r.key) => { const mx = Math.max(1, ...rows.map(r => r.avg || 0)); return `<div class="gb"><h4>${title}</h4>${rows.map(r => `<div class="gbr"><span>${esc(String(label(r)))}</span><em><u style="width:${(r.avg || 0) / mx * 100}%"></u></em><b>${nf(r.avg)}</b><small>${r.posts} п.</small></div>`).join('')}</div>`; };
+  const groups = st ? `<div class="groups">
+      ${bars('По формату', st.by_type)}
+      ${bars('По дням недели', st.by_weekday)}
+      ${bars('По времени (Ташкент)', [...st.by_hour].sort((a, b) => a.key - b.key), r => String(r.key).padStart(2, '0') + ':00')}
+      ${bars('По длине текста', st.by_text_length)}
+    </div>${st.hashtags.posts_with ? `<p class="soc-d">Хэштеги: в ${st.hashtags.posts_with} постах, среднее ${nf(st.hashtags.avg_with)} против ${nf(st.hashtags.avg_without)} без них. Чаще всего: ${st.hashtags.top.map(t => esc(t.tag)).join(', ')}</p>` : ''}` : '';
+  const adv = x.advice;
+  const advice = adv && (adv.recommendations?.length || adv.summary) ? `<div class="sec-h"><span class="who" style="background:${A.k.color}">М</span><h3>Рекомендации маркетолога</h3><span class="meta">по этим данным</span></div>
+    ${adv.summary ? `<p class="adv-sum">${esc(adv.summary)}</p>` : ''}
+    <div class="advs">${(adv.recommendations || []).map((r, i) => `<div class="adv"><b><i>${i + 1}</i>${esc(r.title)}</b><p>${esc(r.why)}</p><p class="do">${icon('arrow-right', 'sm')}${esc(r.do)}</p></div>`).join('')}</div>
+    ${adv.post_ideas?.length ? `<div class="ideas"><h4>Идеи следующих постов</h4>${adv.post_ideas.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}` : '';
+  const table = posts.length ? `<div class="sec-h"><span class="who" style="background:${A.k.color}">М</span><h3>Все посты</h3><span class="meta">клик — подробности</span></div>
+    <div class="tbl-wrap" style="max-height:420px"><table class="rg ptab"><thead><tr><th>Дата</th><th>Формат</th><th>Текст</th><th class="n">${mName}</th>${x.platform === 'instagram' ? '<th class="n">лайки</th><th class="n">комм.</th><th class="n">сохр.</th>' : '<th class="n">реакции</th>'}<th class="n">Δ с прошлой проверки</th></tr></thead><tbody>
+    ${posts.map((p, i) => `<tr data-pi="${i}"><td>${esc(p.date || '—')}</td><td><span class="ptype" style="--c:${TYPE_COLOR[p.type] || '#a1a1aa'}">${esc(p.type)}</span></td><td class="nm">${esc((p.text || '—').replace(/\s+/g, ' ').slice(0, 70))}</td><td class="n">${nf(p[m])}</td>${x.platform === 'instagram' ? `<td class="n">${nf(p.likes)}</td><td class="n">${nf(p.comments)}</td><td class="n">${nf(p.saved)}</td>` : `<td class="n">${nf(p[rKey])}</td>`}<td class="n">${p.delta != null ? `<span class="${p.delta > 0 ? 'up' : ''}">${p.delta > 0 ? '+' : ''}${nf(p.delta)}</span><small> за ${p.delta_hours} ч</small>` : '<small>первая проверка</small>'}</td></tr>
+      <tr class="pdet" data-pd="${i}" hidden><td colspan="7"><p>${esc(p.text || '')}</p><div class="pdm">${p.reactions_detail ? `<span>${esc(p.reactions_detail)}</span>` : ''}${p.reach != null ? `<span>охват ${nf(p.reach)}</span>` : ''}${p.shares != null ? `<span>репосты ${nf(p.shares)}</span>` : ''}<span>проверок: ${p.checks || 1}</span><a href="${esc(p.url)}" target="_blank" rel="noopener">открыть пост ↗</a></div></td></tr>`).join('')}
+    </tbody></table></div>` : '';
+  return `<div class="doc soc"><div class="doc-h"><div><h1>${esc(x.title || x.handle || x.url)}</h1><p>${esc(x.platform)} · <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url)}</a> · ${esc(x.source || 'браузер')} · ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</p></div>${x.ours ? '<span class="chip dark">наш аккаунт</span>' : ''}</div>
+    ${x.needs_connection ? `<div class="risk">${icon('alert', 'sm')}<span>${esc(x.needs_connection)}</span></div>` : ''}
     ${x.description || x.summary ? `<p class="soc-d">${esc(x.description || x.summary)}</p>` : ''}
-    ${posts ? `<div class="sec-h"><span class="who" style="background:${A.k.color}">М</span><h3>Последние посты</h3><span class="meta">${(x.posts || []).length}</span></div><div class="posts">${posts}</div>` : ''}
+    ${kpi}${chart}${groups}${advice}${table}
     ${x.text ? `<p class="soc-d">${esc(x.text.slice(0, 900))}</p>` : ''}</div>`;
 }
 async function showSocial(x) {
-  const id = 'soc-' + String(x.handle || x.url || 'site').replace(/[^\w.-]/g, '').slice(0, 40);
+  const id = 'soc-' + x.platform + '-' + String(x.handle || x.url || 'site').replace(/[^\w.-]/g, '').slice(0, 40);
   SOCIAL[id] = x;
-  addDoc('Соцсети', { id, nm: (x.platform === 'telegram' ? 'Telegram · @' : x.platform === 'instagram' ? 'Instagram · @' : 'Сайт · ') + (x.handle || x.url.replace(/^https?:\/\//, '').slice(0, 30)), tag: 'live', cls: 'new', ic: 'globe' });
+  addDoc('Соцсети', { id, nm: (x.platform === 'telegram' ? 'Telegram · @' : x.platform === 'instagram' ? 'Instagram · @' : 'Сайт · ') + (x.handle || String(x.url).replace(/^https?:\/\//, '').slice(0, 30)), tag: x.stats ? x.stats.posts_analyzed + ' п.' : 'live', cls: 'new', ic: 'globe' });
   openDoc(id);
-  busy = true; agentBusy('k', true); setStatus('Маркетолог разбирает страницу', true);
-  for (const el of [...page.querySelectorAll('.post')].slice(0, 6)) { el.classList.add('picked'); await cursorTo('k', el, 'читаю', 260, 0.85); await sleep(140); el.classList.remove('picked'); }
+  page.querySelectorAll('.ptab tr[data-pi]').forEach(tr => tr.onclick = () => { const d = page.querySelector(`[data-pd="${tr.dataset.pi}"]`); d.hidden = !d.hidden; });
+  busy = true; agentBusy('k', true); setStatus('Маркетолог разбирает посты', true);
+  const bars = [...page.querySelectorAll('.pchart a')];
+  for (const el of bars.filter((_, i) => i % Math.max(1, Math.floor(bars.length / 8)) === 0).slice(0, 8)) { await cursorTo('k', el, 'пост', 200, 0.5, 0.2); await sleep(90); }
+  const adv = page.querySelector('.advs');
+  if (adv) { adv.scrollIntoView({ behavior: 'smooth', block: 'center' }); await sleep(400); await cursorTo('k', adv, 'рекомендации', 500, 0.3, 0.2); }
   agentBusy('k', false); busy = false; parkCursors(); setStatus('Готово');
-  logMsg('k', `снял данные ${x.platform === 'website' ? 'сайта' : 'страницы'}: ${(x.posts || []).length ? (x.posts.length + ' постов') : 'описание'}`);
+  logMsg('k', x.stats ? `разобрал ${x.stats.posts_analyzed} постов, ${x.advice?.recommendations?.length || 0} рекомендаций` : 'снял публичные данные профиля');
 }
-
 
 // =====================================================================
 // BUILDING → FLOORS → UNIT: click a house, it opens floor by floor
