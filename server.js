@@ -8,11 +8,13 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { queryInvoices, calculate, socialMonitor, geocode, osmBuilding } from './lib/tools.js';
 import { telegramDeep, instagramDeep, accounts, rememberAccount } from './lib/social.js';
 import { loadMcp, mcpToolDefs, isMcpTool, callMcp, mcpStatus } from './lib/mcp.js';
+import * as integrations from './lib/integrations/index.js';
+import * as forecast from './lib/forecast/index.js';
 
 const DIR = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = join(DIR, 'public');
@@ -35,13 +37,15 @@ const SYSTEM = `Ты менеджер AI-команды бухгалтерии �
 - Любой документ (заявление, приказ, договор, служебная записка, письмо или пояснение в налоговую, акт, доверенность, справка, отчёт) — create_document. Он сразу откроется на холсте.
 - «Покажи как PDF», «скачай», «сохрани в Word/Excel» — export_document (если документа ещё нет, сначала create_document в том же ответе).
 - Вопросы по продажам, покупкам, контрагентам, датам («кто крупнейший покупатель», «сколько купили у…») — query_invoices. Любые расчёты (налоги, проценты, «а если») — calculate. Не считай в уме.
+- ЭСФ могут приходить из Soliq / 1С / Didox (вкладка «Связи»). Если данных нет — попроси подключить источник или загрузить выгрузку.
+- Деньги и обязательства: open_document id=cashflow|bank|cash|ar|ap|rent|credit|opps|today|forecast|ecp. «Что делать сегодня» → today; возможности → opps; прогноз продаж/trade → forecast; пакет к ЭЦП (стоп до подписи) → ecp.
 - Соцсети — social_monitor: маркетолог разбирает КАЖДЫЙ пост (просмотры, реакции, тип, время) и даёт рекомендации, что публиковать. Если пользователь говорит, что это его/наш аккаунт, передай ours=true — аккаунт запомнится и будет отслеживаться. «Наши соцсети», «проверь наши каналы» — бери их из списка НАШИ СОЦСЕТИ. Instagram: аналитика по постам и охват только через подключённый официальный API владельца; без него — только счётчики профиля, так и скажи. Для любых других сайтов есть браузер mcp_playwright_*.
 - Здание, этаж, помещение: пользователь кликает дом на карте, видит его по этажам; этаж — select_floor, номер и площадь помещения — set_unit (площадь только со слов пользователя или с его плана).
 - Геомодель: где находится предприятие, карта, трафик — locate_business (адрес или координаты и тип бизнеса). Если адрес неизвестен, вызови locate_business без адреса: пользователь отметит точку на карте. Карта 2D/3D — show_map. Трафик модель считает сама и только для бизнеса, которому он нужен.
 - «Главный экран», «отчёт», «расчёт», «hisobot» = расчёт НДС: open_document vat-10, а если отчёт не собран — build_vat_report. show_home только по явной просьбе «на старт».
 - Не задавай много уточнений: если просят документ, сразу сделай черновик, неизвестные поля оставь «________» и предложи дополнить.
 - Вызвав инструмент, добавь одну короткую фразу о том, что сделал.
-- Черновики можно делать сразу. Отправлять, подписывать и подавать документы нельзя без разрешения пользователя.
+- Черновики можно делать сразу. Отправлять, подписывать и подавать документы нельзя без разрешения. Пакет к ЭЦП — open_document ecp.
 
 ЗАПРЕТ НА ВЫДУМЫВАНИЕ ДАННЫХ (и в ответах, и в документах):
 - Любая цифра (сумма, процент, ставка, срок, количество, зарплата, цена, статистика) должна быть в ДАННЫХ, в словах пользователя или в результате инструмента.
@@ -68,7 +72,7 @@ function baseTools(docs) {
     fn('set_reminder', 'Добавить напоминание в «Сроки».', { date: S('дата ДД.ММ или ДД.ММ.ГГГГ'), text: S('о чём напомнить') }, ['date', 'text']),
     fn('request_document', 'Попросить пользователя загрузить документ, которого не хватает: подсветить зону загрузки.', { what: S('что загрузить, например «банковскую выписку за октябрь»') }, ['what']),
     fn('show_home', 'Стартовый экран. Только по явной просьбе «на старт», «начать заново».'),
-    fn('prepare_actions', 'Карточка разрешения для пакета по НДС: Excel расчёта, заявление на упрощённый НДС, напоминание.'),
+    fn('prepare_actions', 'Карточка разрешения: Excel НДС, заявление на 6%, напоминание, пульс денег. После — пакет к ЭЦП (стоп до подписи).'),
     // ---- documents ----
     fn('create_document', 'Создать или переписать любой документ и открыть его на холсте. Текст в markdown: строки, начинающиеся с ">>", — шапка «кому/от кого» справа; "# " — название документа по центру; "## " — подзаголовок; "- " — пункт списка; таблица — строки "| a | b |"; **жирный**. Реквизиты компании бери из ДАННЫХ, неизвестное — «________». В конце строка подписи.',
       { id: S('id существующего документа, чтобы переписать его; пусто для нового'), title: S('короткое название для панели документов'), kind: S('тип', { enum: ['заявление', 'приказ', 'договор', 'письмо', 'записка', 'акт', 'справка', 'отчёт', 'доверенность', 'другое'] }), body: S('полный текст документа в markdown') }, ['title', 'kind', 'body']),
@@ -222,6 +226,47 @@ async function runTurn(messages, docs, stats) {
   return { reply, actions: acts, toolResults };
 }
 
+const EXPLAIN_SYS = `Ты — ИИ-курсор в Hisob AI (бухгалтерия малого бизнеса в Узбекистане). Пользователь кликнул элемент на экране.
+Объясни простым языком, 3–6 предложений:
+1) что это за показатель / блок и как считается;
+2) что значит текущее значение (если видно) — хорошо или плохо и почему;
+3) на что обратить внимание.
+Цифры бери ТОЛЬКО из данных элемента. Не выдумывай. Формат: первая строка «## короткий заголовок», далее текст. Язык — язык пользователя (русский или узбекский).
+
+Глоссарий:
+- DSO = дебиторка ÷ (приход месяца / 30) — сколько дней в среднем ждут оплату от клиентов.
+- DPO = кредиторка ÷ (расход месяца / 30) — сколько дней в среднем платите поставщикам.
+- Runway = остаток ÷ (расход / 30) — на сколько дней хватит денег без новых приходов.
+- Aging — разбивка долгов по возрасту (0 / 1–30 / 31–60 / 60+ дней).
+- Дебиторка — кто должен вам; кредиторка — кому должны вы.
+- НДС общий: начислено − зачёт; упрощённый 6% — с оборота без зачёта входного НДС.
+- Пульс денег / cashflow — банк + касса: приход, расход, остаток.
+- Прогноз trade: XGBoost (дневной recursive) по 3 месяцам истории (авг–окт), горизонт — следующий месяц (ноябрь). Категории: эквайринг, розница, B2B, сырьё, коммунальные, аренда, зарплата, налог, кредит и др. WAPE — на holdout.`;
+
+async function explainApi(req, res) {
+  let body = '';
+  for await (const c of req) { body += c; if (body.length > 8e4) return send(res, 413, { error: 'too large' }); }
+  if (!KEY) return send(res, 503, { error: 'OPENROUTER_API_KEY not set' });
+  let j; try { j = JSON.parse(body); } catch { return send(res, 400, { error: 'bad json' }); }
+  const el = j.element && typeof j.element === 'object' ? j.element : {};
+  const keep = {};
+  for (const k of ['kind', 'key', 'label', 'value', 'hint', 'text', 'section', 'doc', 'chart']) {
+    if (el[k] != null && el[k] !== '') keep[k] = el[k];
+  }
+  const lang = j.lang === 'uz' ? 'uz' : 'ru';
+  try {
+    const r = await llm([
+      { role: 'system', content: EXPLAIN_SYS + (lang === 'uz' ? '\nJavobni o\'zbekcha yoz.' : '') },
+      { role: 'user', content: 'Объясни этот элемент:\n' + JSON.stringify(keep).slice(0, 6000) },
+    ]);
+    console.log(`explain ${r.provider || ''} tok=${r.tokens} $${(r.cost || 0).toFixed(5)} | ${(keep.label || keep.key || '').toString().slice(0, 60)}`);
+    send(res, 200, { reply: r.text || '—', model: MODEL });
+  } catch (e) {
+    console.error('explain', e.message);
+    send(res, 502, { error: 'llm error' });
+  }
+}
+
 async function chat(req, res) {
   let body = '';
   for await (const c of req) { body += c; if (body.length > 2e5) return send(res, 413, { error: 'too large' }); }
@@ -263,8 +308,16 @@ async function chat(req, res) {
     const fmtAsked = /(pdf|пдф)/i.test(question) ? 'pdf' : /(word|ворд|docx)/i.test(question) ? 'docx' : /(excel|эксель|xlsx)/i.test(question) ? 'xlsx' : null;
     if (fmtAsked && /(сохран|скача|экспорт|выгруз|в виде|как |файл|saqla|yukla)/i.test(question) && !actions.some(a => a.name === 'export_document')) {
       const src = [...actions].reverse().find(a => a.name === 'open_document' || a.name === 'create_document');
+      // empty id → browser uses lastCreated after create_document
       actions.push({ name: 'export_document', args: { id: src?.name === 'open_document' ? src.args.id : '', format: fmtAsked } });
       stats.log.push(`export_document(auto,${fmtAsked})`);
+    }
+    // Prefer create before export so lastCreated is set when id is empty
+    const ci = actions.findIndex(a => a.name === 'create_document');
+    const ei = actions.findIndex(a => a.name === 'export_document');
+    if (ci >= 0 && ei >= 0 && ei < ci) {
+      const [ex] = actions.splice(ei, 1);
+      actions.push(ex);
     }
     console.log(`chat ${Date.now() - t0}ms ${stats.provider} tok=${stats.tokens} $${stats.cost.toFixed(5)}${j.voice ? ' voice' : ''}${retried ? ' RETRY' : ''}${blocked ? ' BLOCKED' : ''} | ${question.slice(0, 70).replace(/\s+/g, ' ')} -> ${stats.log.join(', ') || 'text'}`);
     send(res, 200, { reply, actions });
@@ -272,19 +325,72 @@ async function chat(req, res) {
 }
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
 
+async function readJson(req, limit = 2e6) {
+  let body = '';
+  for await (const c of req) { body += c; if (body.length > limit) throw Object.assign(new Error('too large'), { status: 413 }); }
+  if (!body) return {};
+  try { return JSON.parse(body); } catch { throw Object.assign(new Error('bad json'), { status: 400 }); }
+}
+
+async function integrationsApi(req, res, url) {
+  const path = url.pathname;
+  try {
+    if (path === '/api/integrations' && req.method === 'GET') return send(res, 200, integrations.status());
+    if (path === '/api/integrations/data' && req.method === 'GET') return send(res, 200, { books: integrations.getInvoiceData() });
+    if (path === '/api/integrations/demo' && req.method === 'POST') return send(res, 200, integrations.useDemo());
+    if (path === '/api/integrations/import' && req.method === 'POST') {
+      const body = await readJson(req);
+      return send(res, 200, await integrations.importUpload(body));
+    }
+    const m = path.match(/^\/api\/integrations\/(soliq|didox|onedc)\/(connect|test|sync|disconnect)$/);
+    if (m) {
+      const [, id, action] = m;
+      if (action === 'disconnect' && req.method === 'POST') return send(res, 200, integrations.disconnect(id));
+      if (action === 'test' && req.method === 'POST') return send(res, 200, await integrations.testConnection(id));
+      if (action === 'connect' && req.method === 'POST') return send(res, 200, await integrations.connect(id, await readJson(req)));
+      if (action === 'sync' && req.method === 'POST') {
+        const body = await readJson(req);
+        return send(res, 200, await integrations.sync(id, { upload: body.upload, period: body.period }));
+      }
+    }
+    return send(res, 404, { error: 'not found' });
+  } catch (e) {
+    return send(res, e.status || 500, { error: e.message || 'integrations error' });
+  }
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/chat' && req.method === 'POST') return chat(req, res);
+  if (url.pathname === '/api/explain' && req.method === 'POST') return explainApi(req, res);
+  if (url.pathname === '/api/finance/bundle' && req.method === 'GET') {
+    try { return send(res, 200, await forecast.buildBundle()); }
+    catch (e) { console.error('forecast', e.message); return send(res, 500, { error: e.message }); }
+  }
+  if (url.pathname === '/api/forecast' && req.method === 'GET') {
+    try {
+      const b = await forecast.buildBundle();
+      return send(res, 200, b.forecast);
+    } catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  if (url.pathname.startsWith('/api/integrations')) return integrationsApi(req, res, url);
   if (url.pathname === '/api/social/accounts') return send(res, 200, { accounts: accounts() });
   if (url.pathname === '/api/osm/building') return send(res, 200, { building: await osmBuilding(url.searchParams.get('id')).catch(() => null) });
   if (url.pathname === '/api/geo/search') { const q = url.searchParams.get('q') || ''; return send(res, 200, { results: q.trim() ? await geocode(q).catch(() => []) : [] }); }
-  const p = normalize(decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname)).replace(/^(\.\.[/\\])+/, '');
+  // Static files: never escape ROOT (block .. and absolute join quirks)
+  const raw = normalize(decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
+  const rel = raw.replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
+  const filePath = resolve(ROOT, rel);
+  if (!(filePath === ROOT || filePath.startsWith(ROOT + sep))) {
+    res.writeHead(403); return res.end('forbidden');
+  }
   try {
-    const file = await readFile(join(ROOT, p));
-    res.writeHead(200, { 'Content-Type': TYPES[extname(p)] || 'application/octet-stream' }); res.end(file);
+    const file = await readFile(filePath);
+    res.writeHead(200, { 'Content-Type': TYPES[extname(filePath)] || 'application/octet-stream' }); res.end(file);
   } catch { res.writeHead(404); res.end('not found'); }
 }).listen(PORT, () => console.log('Hisob AI → http://localhost:' + PORT));
 loadMcp().then(() => console.log('MCP:', mcpStatus.join('; ') || 'no servers'));
+forecast.warm().catch(e => console.error('forecast warm failed:', e.message));
 // Track our own accounts: every 6 hours re-read every post, so each post gets a history of views.
 const REFRESH_H = Number(process.env.SOCIAL_REFRESH_HOURS) || 6;
 setInterval(async () => {

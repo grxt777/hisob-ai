@@ -1,11 +1,11 @@
 // Hisob AI — workspace prototype.
 // The manager plans, the bookkeeper / lawyer / analyst do the work on the canvas with their cursors.
-// All numbers are computed from window.DEMO (anonymized e-invoice registries), nothing is hardcoded.
+// All numbers are computed from window.DEMO / synced Soliq·1C·Didox books — nothing is invented.
 const $ = s => document.querySelector(s);
-const D = window.DEMO;
+let D = window.DEMO;
 
 // ---------- company & assumptions ----------
-const CO = { name: '«BARAKA NON» MCHJ', inn: '300 000 001', period: 'октябрь 2026', regime: 'Общий режим', regimeSub: 'НДС 12% + налог на прибыль 15%' };
+const CO = { name: '«BARAKA NON» MCHJ', inn: '300 000 001', period: 'октябрь 2026', regime: 'Общий режим', regimeSub: 'НДС 12% + налог на прибыль 15%', source: 'demo' };
 const BRV = 440000;            // базовая расчётная величина, сум. TODO: сверить актуальное значение
 const TURNOVER_LIMIT = 12000;  // порог в БРВ для налога с оборота. TODO: сверить по lex.uz
 const SIMPLIFIED_RATE = 0.06;  // упрощённый НДС по УП-100, со всего оборота
@@ -21,29 +21,60 @@ const A = Object.fromEntries(AGENTS.map(a => [a.id, a]));
 
 // ---------- numbers ----------
 const sum = (arr, k) => arr.reduce((s, x) => s + (x[k] || 0), 0);
-const C = (() => {
+const C = { sb: 0, sv: 0, pb: 0, pv: 0, pay: 0, gross: 0, simp: 0, save: 0, annual: 0, limit: 0, nonded: [], b2b: 0 };
+function recompute() {
   const sb = sum(D.sales, 'base'), sv = sum(D.sales, 'vat');
   const ded = D.purchases.filter(p => !p.note), nonded = D.purchases.filter(p => p.note);
   const pb = sum(D.purchases, 'base'), pv = sum(ded, 'vat');
-  const pay = sv - pv;
-  const gross = sb + sv;
-  const simp = gross * SIMPLIFIED_RATE;
-  const annual = sb * 12, limit = TURNOVER_LIMIT * BRV;
-  return { sb, sv, pb, pv, pay, gross, simp, save: pay - simp, annual, limit, nonded, b2b: D.sales.filter(s => s.inn).length };
-})();
+  const pay = sv - pv, gross = sb + sv, simp = gross * SIMPLIFIED_RATE;
+  Object.assign(C, { sb, sv, pb, pv, pay, gross, simp, save: pay - simp, annual: sb * 12, limit: TURNOVER_LIMIT * BRV, nonded, b2b: D.sales.filter(s => s.inn).length });
+}
+recompute();
+function applyBooks(books) {
+  if (!books) return;
+  D = { sales: books.sales || [], purchases: books.purchases || [] };
+  window.DEMO = D;
+  if (books.company?.name) CO.name = books.company.name;
+  if (books.company?.inn) CO.inn = String(books.company.inn).replace(/(\d{3})(?=\d)/g, '$1 ').trim();
+  if (books.period) CO.period = books.period;
+  CO.source = books.source || 'demo';
+  recompute();
+  reportDone = false; approved = false;
+  $('#coName').textContent = CO.name;
+  $('#coInn').textContent = 'ИНН ' + CO.inn;
+  const tag = { demo: 'демо', soliq: 'Soliq', didox: 'Didox', onedc: '1С' }[CO.source] || CO.source;
+  $('#regimeBox').innerHTML = `<div class="lbl">Режим налогообложения</div><b>${CO.regime}</b><span>${CO.regimeSub}</span><span style="display:block;margin-top:6px;color:var(--muted)">Источник ЭСФ: ${tag}${books.syncedAt ? ' · ' + new Date(books.syncedAt).toLocaleString('ru-RU') : ''}</span>`;
+  // refresh open invoice docs if visible
+  if (currentDoc === 'esf-s' || currentDoc === 'esf-p') openDoc(currentDoc);
+  renderTree();
+}
 const fmt = n => Math.round(n).toLocaleString('ru-RU');
 const mln = n => (n / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн';
 const mlrd = n => (n / 1e9).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' млрд';
 
 // ---------- state ----------
 let tool = 'select', busy = false, reportDone = false, approved = false, currentDoc = null, ttsOn = false;
+const openTabs = []; // document ids currently open as browser tabs (home is always present)
+const CREATED = {}; let docSeq = 0, lastCreated = null;
+const SOCIAL = {};
 const DOCS = [
   { g: 'Данные', items: [
     { id: 'esf-s', nm: 'ЭСФ · продажи', tag: String(D.sales.length), ic: 'file' },
     { id: 'esf-p', nm: 'ЭСФ · покупки', tag: String(D.purchases.length), ic: 'file' },
-    { id: 'bank', nm: 'Банковская выписка · окт', tag: 'PDF', ic: 'file' },
+    { id: 'cashflow', nm: 'Пульс денег · октябрь', tag: 'банк+касса', ic: 'coins' },
+    { id: 'bank', nm: 'Банк · движения', tag: '14', ic: 'card' },
+    { id: 'cash', nm: 'Касса / наличные', tag: '6', ic: 'coins' },
+  ] },
+  { g: 'Обязательства', items: [
+    { id: 'ar', nm: 'Дебиторка · нам должны', tag: 'Q/Z', ic: 'inbox' },
+    { id: 'ap', nm: 'Кредиторка · мы должны', tag: 'Q/Z', ic: 'send' },
+    { id: 'rent', nm: 'Аренда · график', tag: '18 млн', ic: 'calendar' },
+    { id: 'credit', nm: 'Кредит · Uzmilliybank', tag: '24%', ic: 'card' },
   ] },
   { g: 'Отчёты', items: [
+    { id: 'today', nm: 'Сегодня · 3 действия', tag: 'план', cls: 'new', ic: 'bolt' },
+    { id: 'forecast', nm: 'Прогноз trade · XGBoost', tag: 'ноя', cls: 'new', ic: 'sparkle' },
+    { id: 'opps', nm: 'Возможности · экономия', tag: 'AI', cls: 'new', ic: 'sparkle' },
     { id: 'vat-09', nm: 'Расчёт НДС · сентябрь', tag: 'сдан', cls: 'ok', ic: 'sheet' },
     { id: 'profit-q3', nm: 'Налог на прибыль · III кв', tag: 'сдан', cls: 'ok', ic: 'sheet' },
   ] },
@@ -51,10 +82,10 @@ const DOCS = [
     { id: 'geo', nm: 'Карта предприятия', tag: '2D/3D', ic: 'globe' },
   ] },
   { g: 'Прочее', items: [
-    { id: 'rent', nm: 'Договор аренды цеха', tag: 'DOCX', ic: 'file' },
     { id: 'memo', nm: 'Докладная · инвентаризация', tag: 'DOCX', ic: 'file' },
   ] },
 ];
+const FIN = () => window.FINANCE.snapshot({ pay: C.pay, simp: C.simp, save: C.save });
 const DATES = [ // TODO: сроки сверить с Налоговым кодексом перед питчем
   { d: '15', m: 'дек', t: 'НДФЛ и соцналог за ноябрь', s: 'ежемесячно', soon: true },
   { d: '20', m: 'дек', t: 'Расчёт НДС за ноябрь', s: 'ежемесячно', soon: true },
@@ -75,19 +106,70 @@ function renderTree() {
     `<div class="node ${currentDoc === it.id ? 'sel' : ''} ${it.fresh ? 'fresh' : ''}" data-doc="${it.id}">${icon(it.ic || 'file', 'sm')}<span class="nm">${esc(it.nm)}</span>${it.tag ? `<span class="tag ${it.cls || ''}">${esc(it.tag)}</span>` : ''}</div>`).join('')}</div>`).join('');
   DOCS.forEach(g => g.items.forEach(it => (it.fresh = false)));
 }
+
+// ---------- browser tabs (open docs like Chrome / Cursor) ----------
+function tabMeta(id) {
+  if (id == null) return { id: null, nm: 'Hisob AI — рабочее пространство', ic: 'globe' };
+  const item = DOCS.flatMap(g => g.items).find(x => x.id === id);
+  if (item) return { id, nm: item.nm, ic: item.ic || 'file' };
+  if (CREATED[id]) return { id, nm: CREATED[id].title, ic: 'file' };
+  if (SOCIAL[id]) return { id, nm: SOCIAL[id].title || SOCIAL[id].handle || id, ic: 'globe' };
+  return { id, nm: String(id), ic: 'file' };
+}
+function ensureTab(id) {
+  if (id != null && !openTabs.includes(id)) openTabs.push(id);
+  renderTabs();
+}
+function renderTabs() {
+  const el = $('#btabs'); if (!el) return;
+  const ids = [null, ...openTabs];
+  el.innerHTML = ids.map(id => {
+    const m = tabMeta(id);
+    const on = currentDoc === id || (id == null && currentDoc == null);
+    const close = id != null
+      ? `<span class="btab-x" data-close="${esc(id)}" title="Закрыть" role="button">${icon('x', 'sm')}</span>`
+      : '';
+    return `<button type="button" class="btab ${on ? 'on' : ''} ${id == null ? 'home' : ''}" role="tab" aria-selected="${on}" data-tab="${id == null ? '' : esc(id)}">${icon(m.ic, 'sm')}<span class="btab-nm">${esc(m.nm)}</span>${close}</button>`;
+  }).join('');
+}
+function activateHome() {
+  closePop(); if (targets.length) clearTargets();
+  if (geoMap) { geoMap.remove(); geoMap = null; }
+  currentDoc = null; renderTree(); renderTabs();
+  page.innerHTML = ''; showStart(true); canvas.scrollTop = 0;
+}
+function closeTab(id) {
+  if (busy || id == null) return;
+  const i = openTabs.indexOf(id); if (i < 0) return;
+  openTabs.splice(i, 1);
+  if (currentDoc === id) {
+    const next = openTabs[i] || openTabs[i - 1] || null;
+    if (next) openDoc(next); else activateHome();
+  } else renderTabs();
+}
+$('#btabs')?.addEventListener('click', e => {
+  const x = e.target.closest('[data-close]');
+  if (x) { e.preventDefault(); e.stopPropagation(); closeTab(x.dataset.close); return; }
+  const t = e.target.closest('[data-tab]');
+  if (!t || busy) return;
+  const id = t.dataset.tab;
+  if (!id) activateHome();
+  else if (id !== currentDoc) openDoc(id);
+});
 function addDoc(group, item) {
   let g = DOCS.find(x => x.g === group);
   if (!g) { g = { g: group, items: [] }; DOCS.splice(1, 0, g); }
   const old = g.items.find(x => x.id === item.id);
   old ? Object.assign(old, item, { fresh: true }) : g.items.unshift({ ...item, fresh: true });
   renderTree();
+  if (openTabs.includes(item.id)) renderTabs();
 }
 function renderDates() {
   $('#dates').innerHTML = DATES.map(x => `<div class="date ${x.soon ? 'soon' : ''} ${x.fresh ? 'fresh' : ''}"><div class="d"><b>${x.d}</b><small>${x.m}</small></div><div class="t">${esc(x.t)}<span>${esc(x.s)}</span></div></div>`).join('');
   $('#dateCount').textContent = DATES.length;
   DATES.forEach(x => (x.fresh = false));
 }
-renderTree(); renderDates();
+renderTree(); renderDates(); renderTabs();
 
 function setStatus(t, isBusy = false) { $('#statusTxt').textContent = t; $('#status').classList.toggle('busy', isBusy); }
 function agentBusy(id, on) { $('#av-' + id)?.classList.toggle('busy', on); }
@@ -125,7 +207,7 @@ function speak(text) {
 function welcome() {
   aiMsg(`<div class="welcome"><h3>Ассалому алейкум!</h3><p>Я менеджер вашей AI-команды. Скажите задачу голосом или текстом, остальное сделают агенты.</p>
     <div class="tip">${icon('mic', 'sm')}<span><b>Голос</b>: говорите по-узбекски или по-русски.</span></div>
-    <div class="tip">${icon('ai-cursor', 'sm')}<span><b>ИИ-курсор</b> (клавиша A): отметьте любое место в документе, хоть несколько, и спросите о нём. Правый клик — сразу объясню.</span></div>
+    <div class="tip">${icon('ai-cursor', 'sm')}<span><b>ИИ-курсор</b> (клавиша A): клик по цифре, KPI или графику — сразу объясню. Shift+клик — несколько мест в чат.</span></div>
     <div class="tip">${icon('shield', 'sm')}<span>Ничего не отправляю и не подписываю <b>без вашего разрешения</b>.</span></div></div>`);
 }
 
@@ -221,22 +303,239 @@ const applicationDoc = () => letterDoc({
     <p>Подготовлено Hisob AI на основании ${D.sales.length + D.purchases.length} электронных счетов-фактур. Перед подачей требуется проверка и подпись ЭЦП руководителя.</p>`,
 });
 
-function openDoc(id) {
+async function openDoc(id) {
   closePop(); if (targets.length) clearTargets();
   if (geoMap && id !== 'geo') { geoMap.remove(); geoMap = null; }
-  currentDoc = id; renderTree(); showStart(false);
+  const isAx = id === 'forecast';
+  const isFin = /^(cashflow|bank|cash|ar|ap|rent|credit|opps|today)$/.test(id);
+  $('#frame')?.classList.toggle('ax-wide', isAx);
+  if (!isAx) HisobAnalytics?.killCharts?.();
+  currentDoc = id; ensureTab(id); renderTree(); showStart(false);
   const item = DOCS.flatMap(g => g.items).find(x => x.id === id);
-  $('#frameUrl').textContent = item ? item.nm : 'hisob.ai';
   if (id === 'vat-10') { if (reportDone) fillReportInstant(); return; }
   if (id === 'esf-s') page.innerHTML = `<div class="doc"><div class="doc-h"><div><h1>ЭСФ · продажи</h1><p>${D.sales.length} счетов-фактур за ${CO.period}</p></div></div><div class="tbl-wrap" style="max-height:none"><table class="rg"><thead>${headS}</thead><tbody>${D.sales.map(rowS).join('')}</tbody><tfoot><tr><td colspan="5">Итого</td><td class="n" data-x="sb">${fmt(C.sb)}</td><td class="n" data-x="sv">${fmt(C.sv)}</td></tr></tfoot></table></div></div>`;
   else if (id === 'esf-p') page.innerHTML = `<div class="doc"><div class="doc-h"><div><h1>ЭСФ · покупки</h1><p>${D.purchases.length} счетов-фактур за ${CO.period}</p></div></div><div class="tbl-wrap" style="max-height:none"><table class="rg"><thead>${headP}</thead><tbody>${D.purchases.map(rowP).join('')}</tbody><tfoot><tr><td colspan="5">Итого</td><td class="n" data-x="pb">${fmt(C.pb)}</td><td class="n" data-x="pv">${fmt(C.pv)}</td><td></td></tr></tfoot></table></div></div>`;
   else if (id === 'app-6') page.innerHTML = applicationDoc();
+  else if (id === 'ecp') page.innerHTML = ecpPackHtml();
+  else if (id === 'forecast') {
+    await showAnalytics('forecast', false);
+    return;
+  }
+  else if (isFin) {
+    page.innerHTML = `<div class="doc fin"><p class="muted" style="padding:24px">Загрузка книг…</p></div>`;
+    try { await window.FINANCE.ensure?.(); } catch (e) { console.warn(e); }
+    // refresh tree tags with live op counts
+    const S0 = FIN();
+    const bankItem = DOCS.flatMap(g => g.items).find(x => x.id === 'bank');
+    const cashItem = DOCS.flatMap(g => g.items).find(x => x.id === 'cash');
+    if (bankItem) bankItem.tag = String((S0.bank || []).length);
+    if (cashItem) cashItem.tag = String((S0.cash || []).length);
+    renderTree();
+    page.innerHTML = financeDocHtml(id);
+    canvas.scrollTop = 0;
+    bindFinanceActions();
+    return;
+  }
   else if (id === 'vat-09' || id === 'profit-q3') page.innerHTML = letterDoc({ title: item.nm, chip: 'Сдан · демо-данные', sign: false, body: `<p>Отчёт за прошлый период хранится здесь, чтобы агенты сравнивали динамику: рост продаж, изменение НДС к уплате, сезонность.</p><p class="muted">В рабочей версии сюда подгружается документ из кабинета налоговой или загруженный вами файл.</p>` });
   else if (id === 'geo') { renderGeo(); return; }
   else if (SOCIAL[id]) page.innerHTML = socialHtml(id);
   else if (CREATED[id]) page.innerHTML = createdDocHtml(id);
   else page.innerHTML = letterDoc({ title: item ? item.nm : 'Документ', chip: 'Файл не загружен в демо', sign: false, body: `<p>Здесь будет содержимое загруженного файла. В демо это заглушка без данных.</p><p>Загрузите настоящий документ через «Загрузить» слева, и агенты используют его: юрист — договоры, бухгалтер — выписки и докладные.</p>` });
   canvas.scrollTop = 0;
+  bindFinanceActions();
+}
+
+function moneyRow(r, i) {
+  const sign = r.type === 'in' ? '+' : '−';
+  const cls = r.type === 'in' ? 'ok' : '';
+  const note = [r.cat, r.note].filter(Boolean).join(' · ') || '—';
+  return `<tr><td>${i + 1}</td><td>${r.date}</td><td class="nm">${esc(r.name)}</td><td>${esc(note)}</td><td class="n ${cls}">${sign}${fmt(r.amount)}</td></tr>`;
+}
+function financeDocHtml(id) {
+  const S = FIN();
+  const axBtn = (view) => `<button type="button" class="btn btn-outline btn-sm" data-ax-open="${view}">${icon('sparkle', 'sm')}Аналитика</button>`;
+  if (id === 'cashflow') {
+    return `<div class="doc fin"><div class="doc-h"><div><h1>Пульс денег · ${esc(S.period)}</h1><p>Банк + касса · остаток и ближайшие платежи</p></div><div class="fin-actions">${axBtn('cashflow')}<span class="chip dark">книги</span></div></div>
+      <div class="kpis">
+        <div class="kpi" data-ask="in_total"><span>Приход</span><b data-x="fin-in">${fmt(S.inTotal)}</b><small>банк ${fmt(S.bankIn)} · касса ${fmt(S.cashIn)}</small></div>
+        <div class="kpi" data-ask="out_total"><span>Расход</span><b data-x="fin-out">${fmt(S.outTotal)}</b><small>банк ${fmt(S.bankOut)} · касса ${fmt(S.cashOut)}</small></div>
+        <div class="kpi ${S.net >= 0 ? 'ok' : 'warn'}" data-ask="closing"><span>Чистый поток</span><b data-x="fin-net">${fmt(S.net)}</b><small>остаток ${fmt(S.closing)}</small></div>
+      </div>
+      <div class="sec-h"><h3>Ближайшие обязательства</h3></div>
+      <div class="due-list">${(S.dueSoon || []).map(d => `<div class="due"><span class="when">${esc(d.date)}</span><div class="nm">${esc(d.title)}<span class="tag">${esc(d.kind)}</span></div><span class="amt">${fmt(d.amount)}</span></div>`).join('')}</div>
+      <p class="hint-s">Свободно сейчас ≈ ${fmt(S.closing)}. Дебиторка ${fmt(S.arTotal)} · кредиторка ${fmt(S.apTotal)}.</p></div>`;
+  }
+  if (id === 'bank' || id === 'cash') {
+    const rows = id === 'bank' ? (S.bank || []) : (S.cash || []);
+    const title = id === 'bank' ? 'Банк · движения' : 'Касса / наличные';
+    const inn = id === 'bank' ? S.bankIn : S.cashIn;
+    const out = id === 'bank' ? S.bankOut : S.cashOut;
+    return `<div class="doc fin"><div class="doc-h"><div><h1>${title}</h1><p>${rows.length} операций · ${esc(S.period)} · приход ${fmt(inn)} · расход ${fmt(out)}</p></div><div class="fin-actions">${axBtn(id)}</div></div>
+      <div class="tbl-wrap" style="max-height:none"><table class="rg"><thead><tr><th>№</th><th>Дата</th><th>Операция</th><th>Категория / примечание</th><th class="n">Сумма</th></tr></thead><tbody>${rows.map(moneyRow).join('')}</tbody></table></div></div>`;
+  }
+  if (id === 'ar' || id === 'ap') {
+    const rows = id === 'ar' ? (S.ar || []) : (S.ap || []);
+    const title = id === 'ar' ? 'Дебиторка · нам должны' : 'Кредиторка · мы должны';
+    const total = id === 'ar' ? S.arTotal : S.apTotal;
+    return `<div class="doc fin"><div class="doc-h"><div><h1>${title}</h1><p>${rows.length} контрагентов · итого ${fmt(total)}</p></div><div class="fin-actions">${axBtn(id)}</div></div>
+      <div class="tbl-wrap" style="max-height:none"><table class="rg"><thead><tr><th>Контрагент</th><th>ИНН</th><th>Срок</th><th>Дней</th><th class="n">Сумма</th><th>Примечание</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="nm">${esc(r.name)}</td><td class="inn">${r.inn || '—'}</td><td>${esc(r.due)}</td><td>${r.age}</td><td class="n">${fmt(r.amount)}</td><td>${esc(r.note)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+  if (id === 'rent') {
+    return `<div class="doc fin"><div class="doc-h"><div><h1>Аренда цеха · график</h1><p>18 000 000 сум / месяц</p></div><div class="fin-actions">${axBtn('rent')}</div></div>
+      <div class="tbl-wrap" style="max-height:none"><table class="rg"><thead><tr><th>Месяц</th><th>Срок</th><th>Статус</th><th class="n">Сумма</th></tr></thead><tbody>
+      ${(S.rent || []).map(r => `<tr><td>${esc(r.month)}</td><td>${r.date}</td><td>${esc(r.status)}</td><td class="n">${fmt(r.amount)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+  if (id === 'credit') {
+    const cr = S.credit || {};
+    return `<div class="doc fin"><div class="doc-h"><div><h1>Кредит · ${esc(cr.bank || 'Uzmilliybank')}</h1><p>${esc(cr.product || '')} · ставка ${((cr.rate || 0) * 100).toFixed(0)}% · остаток ${fmt(cr.left || 0)}</p></div><div class="fin-actions">${axBtn('credit')}</div></div>
+      <div class="kpis"><div class="kpi"><span>Ежемесячный платёж</span><b>${fmt(cr.monthly || 0)}</b></div><div class="kpi"><span>Следующий</span><b>${esc(cr.nextDue || '—')}</b></div><div class="kpi"><span>Тело кредита</span><b>${fmt(cr.principal || 0)}</b><small>было</small></div></div>
+      <div class="tbl-wrap" style="max-height:none"><table class="rg"><thead><tr><th>Дата</th><th>Статус</th><th class="n">Платёж</th></tr></thead><tbody>
+      ${(cr.schedule || []).map(r => `<tr><td>${r.date}</td><td>${esc(r.status)}</td><td class="n">${fmt(r.amount)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+  if (id === 'opps') {
+    return `<div class="doc fin"><div class="doc-h"><div><h1>Возможности · что сделать</h1><p>Анализ → оптимальное решение → действие с вашего разрешения</p></div><div class="fin-actions">${axBtn('opps')}</div></div>
+      <div class="opp">${(S.opportunities || []).map((o, i) => `<div class="card-o ${i === 0 ? 'best' : ''}" data-opp="${o.id}">
+        <div><b>${i + 1}. ${esc(o.title)}</b></div>
+        <div class="save">${fmt(o.save)}<small>${o.saveYear !== o.save ? '≈ ' + fmt(o.saveYear) + ' / год' : 'эффект'}</small></div>
+        <p>${esc(o.why)}</p>
+        <button class="btn btn-primary btn-sm" data-opp-act="${o.action}">${esc(o.cta)}</button>
+      </div>`).join('')}</div></div>`;
+  }
+  return `<div class="doc fin"><div class="doc-h"><div><h1>Сегодня · 3 действия</h1><p>${esc(CO.name)} · ${new Date().toLocaleDateString('ru-RU')}</p></div><span class="chip dark">план дня</span></div>
+    <div class="opp">
+      <div class="card-o best"><div><b>1. Собрать НДС и увидеть экономию</b></div><div class="save">${fmt(C.save)}<small>/ мес на 6%</small></div><p>ЭСФ уже в системе. Расчёт на холсте, сравнение режимов.</p><button class="btn btn-primary btn-sm" data-opp-act="build_vat">Собрать НДС</button></div>
+      <div class="card-o"><div><b>2. Взыскать просроченную дебиторку</b></div><div class="save">${fmt(S.arOverdue)}<small>просрочено</small></div><p>Напомнить должникам — это сразу закрывает кассовый разрыв.</p><button class="btn btn-outline btn-sm" data-opp-act="open_ar">Открыть дебиторку</button></div>
+      <div class="card-o"><div><b>3. Подготовить пакет к ЭЦП</b></div><div class="save">0 риск AI</div><p>Excel + заявление + чеклист. Отправка останавливается до вашей подписи.</p><button class="btn btn-outline btn-sm" data-opp-act="ecp_pack">Пакет к ЭЦП</button></div>
+    </div>
+    <div class="sec-h"><h3>Ближайшие платежи</h3></div>
+    <div class="due-list">${(S.dueSoon || []).slice(0, 4).map(d => `<div class="due"><span class="when">${esc(d.date)}</span><div class="nm">${esc(d.title)}</div><span class="amt">${fmt(d.amount)}</span></div>`).join('')}</div></div>`;
+}
+
+function analyticsPayload() {
+  // Only meta — books always rebuilt in analytics.html from finance.js
+  return { co: { name: CO.name, inn: CO.inn, period: CO.period }, vat: { pay: C.pay, simp: C.simp, save: C.save, sb: C.sb, sv: C.sv } };
+}
+function openAnalyticsWindow(view = 'overview') {
+  sessionStorage.setItem('hisob-analytics', JSON.stringify(analyticsPayload()));
+  const w = window.open('/analytics.html?view=' + encodeURIComponent(view) + '&t=' + Date.now(), 'hisob-analytics', 'popup=yes,width=1280,height=860,left=80,top=40');
+  if (!w) toast('Разрешите всплывающие окна для аналитики', 'alert');
+  return w;
+}
+async function showAnalytics(view, pop = false) {
+  const vat = { pay: C.pay, simp: C.simp, save: C.save };
+  const v = view === 'overview' ? 'cashflow' : view;
+  $('#frame')?.classList.add('ax-wide');
+  page.innerHTML = `<div class="doc ax-wrap"><p class="muted" style="padding:24px">Загрузка XGBoost / книг…</p></div>`;
+  try { await window.FINANCE.ensure?.(); } catch (e) { console.warn(e); }
+  const S = FIN();
+  page.innerHTML = `<div class="doc ax-wrap">${HisobAnalytics.dashHtml(v, S, vat, CO, { popout: true, icon: icon('arrow-up-right', 'sm') })}</div>`;
+  canvas.scrollTop = 0;
+  bindFinanceActions();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    try { HisobAnalytics.paint(v, S, vat); } catch (e) { console.error(e); }
+  }));
+  page.querySelectorAll('[data-ax-view]').forEach(b => b.onclick = () => {
+    const id = b.dataset.axView === 'overview' ? 'cashflow' : b.dataset.axView;
+    // chart tabs stay in analytics; data docs stay as tables
+    if (/^(bank|cash|ar|ap|rent|credit|cashflow|opps|today)$/.test(id) && id !== 'forecast') {
+      openDoc(id);
+      return;
+    }
+    currentDoc = id;
+    ensureTab(currentDoc); renderTree(); renderTabs();
+    showAnalytics(currentDoc, false);
+  });
+  page.querySelectorAll('[data-ax-pop]').forEach(b => b.onclick = () => openAnalyticsWindow(b.dataset.axPop || v));
+  if (pop) openAnalyticsWindow(v === 'today' ? 'opps' : v);
+}
+addEventListener('message', e => {
+  if (e.origin !== location.origin || e.data?.type !== 'hisob-opp') return;
+  runOppAction(e.data.action);
+});
+
+function ecpPackHtml() {
+  const steps = [
+    { t: 'Расчёт НДС в Excel', ok: approved || !!window._wb },
+    { t: 'Заявление на упрощённый НДС 6%', ok: DOCS.some(g => g.items.some(i => i.id === 'app-6')) },
+    { t: 'Сверка ЭСФ и банка (пульс денег)', ok: true },
+    { t: 'Чеклист перед ЭЦП', ok: true },
+    { t: 'Подпись руководителя ЭЦП', ok: false },
+    { t: 'Отправка в my.soliq.uz', ok: false },
+  ];
+  return `<div class="doc"><div class="doc-h"><div><h1>Пакет к отправке · ЭЦП</h1><p>${CO.name} · ИНН ${CO.inn} · AI готовит, человек подписывает</p></div><span class="chip">стоп перед подписью</span></div>
+    <div class="ecp">
+      <h2>Готово к вашей ЭЦП</h2>
+      <p class="muted">Агент заполнил формы. Дальше только вы: подпись и отправка. Без вашего разрешения ничего не уходит в налоговую.</p>
+      <div class="steps">${steps.map((s, i) => `<div class="step ${s.ok ? 'on' : ''}"><span class="n">${i + 1}</span><div><b>${esc(s.t)}</b><div class="muted">${s.ok ? 'готово' : 'ждёт вас'}</div></div></div>`).join('')}</div>
+      <div class="stop">${icon('shield', 'sm')} <b>Стоп-линия:</b> Hisob AI не подписывает и не отправляет. Кнопка «Отправить» в my.soliq.uz — только после вашей ЭЦП.</div>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" data-ecp="prepare">${icon('send', 'sm')}Подготовить кабинет</button>
+        <button class="btn btn-outline btn-sm" data-ecp="xlsx">Скачать Excel</button>
+        <button class="btn btn-outline btn-sm" data-ecp="app">Открыть заявление</button>
+      </div>
+    </div></div>`;
+}
+
+function bindFinanceActions() {
+  page.querySelectorAll('[data-opp-act]').forEach(b => b.onclick = () => runOppAction(b.dataset.oppAct));
+  page.querySelectorAll('[data-ecp]').forEach(b => b.onclick = () => runEcpAction(b.dataset.ecp));
+  page.querySelectorAll('[data-ax-open]').forEach(b => b.onclick = () => openAnalyticsWindow(b.dataset.axOpen));
+}
+async function runOppAction(act) {
+  if (act === 'build_vat' || act === 'prepare_vat_switch') return reportDone ? (openDoc('opps'), prepareActionsCard()) : runReport();
+  if (act === 'open_ar') return openDoc('ar');
+  if (act === 'open_cashflow') return openDoc('cashflow');
+  if (act === 'open_forecast') return openDoc('forecast');
+  if (act === 'today_plan') return openDoc('today');
+  // openDoc already launches analytics UI + pop-out window
+  if (act === 'ecp_pack') return openEcpPack();
+}
+async function prepareActionsCard() {
+  const m = aiMsg('<p>Пакет готов к вашему разрешению.</p>');
+  permissionCard(m.querySelector('.body'));
+}
+async function openEcpPack() {
+  if (!reportDone) {
+    aiMsg('<p>Сначала соберу НДС — потом открою пакет к ЭЦП.</p>');
+    return runReport();
+  }
+  if (!window._wb) { makeXlsx(); $('#export').disabled = false; }
+  if (!DOCS.some(g => g.items.some(i => i.id === 'app-6'))) {
+    addDoc('Заявления', { id: 'app-6', nm: 'Заявление · упрощённый НДС', tag: 'проект', cls: 'new', ic: 'file' });
+  }
+  approved = true;
+  addDoc('Заявления', { id: 'ecp', nm: 'Пакет к ЭЦП · my.soliq', tag: 'стоп', cls: 'new', ic: 'shield' });
+  openDoc('ecp');
+  setStatus('Ждёт подписи ЭЦП');
+  aiMsg('<p>Пакет к ЭЦП на холсте. Подпись и отправка — только ваши. AI на стоп-линии.</p>');
+}
+async function runEcpAction(act) {
+  if (act === 'xlsx') {
+    if (!window._wb) makeXlsx();
+    $('#export').disabled = false;
+    if (window._wb) XLSX.writeFile(window._wb, 'Raschet_NDS_oktyabr_2026.xlsx');
+    toast('Excel скачан', 'download'); return;
+  }
+  if (act === 'app') { openDoc('app-6'); return; }
+  if (act === 'prepare') {
+    setStatus('Готовлю кабинет my.soliq.uz…', true);
+    await typing(700);
+    await confirmDialog({
+      title: 'Стоп перед ЭЦП',
+      icon: 'shield',
+      ok: 'Оставить на подпись',
+      cancel: 'Закрыть',
+      html: `<p>Форма расчёта НДС и заявление заполнены в черновике кабинета.</p>
+        <ul><li>НДС к уплате: <b>${fmt(C.pay)}</b> сум</li><li>Альтернатива 6%: <b>${fmt(C.simp)}</b> сум</li><li>Отправка <b>заблокирована</b> до ЭЦП руководителя</li></ul>
+        <p class="muted">Hisob AI на этом останавливается — дальше только человек.</p>`,
+    });
+    setStatus('Ждёт подписи ЭЦП');
+    aiMsg('<p>Кабинет подготовлен. Я остановился <b>до ЭЦП</b>. Когда подпишете — отправка ваша.</p>');
+  }
 }
 
 // ---------- main scenario ----------
@@ -245,8 +544,7 @@ async function runReport() {
   if (reportDone) { openDoc('vat-10'); await typing(400); aiMsg('Расчёт за октябрь уже готов, открыл его. Кликните по цифре ИИ-курсором, если нужно объяснение.'); return; }
   busy = true; showStart(false);
   addDoc('Отчёты', { id: 'vat-10', nm: 'Расчёт НДС · октябрь', tag: 'черновик', cls: 'new', ic: 'sheet' });
-  currentDoc = 'vat-10'; renderTree();
-  $('#frameUrl').textContent = 'Расчёт НДС · октябрь 2026 · черновик';
+  currentDoc = 'vat-10'; ensureTab('vat-10'); renderTree();
   if (targets.length) clearTargets();
   page.innerHTML = reportShell(); canvas.scrollTop = 0;
   parkCursors();
@@ -338,9 +636,10 @@ async function runReport() {
 function permissionCard(host) {
   const el = document.createElement('div'); el.className = 'perm';
   el.innerHTML = `<h4>${icon('shield', 'sm')}Что сделать? Нужно ваше разрешение</h4>
-    <label><input type="checkbox" checked data-a="xlsx"><span><b>Бухгалтер</b>: сформировать расчёт НДС в Excel</span></label>
-    <label><input type="checkbox" checked data-a="app"><span><b>Юрист</b>: подготовить заявление на упрощённый НДС 6%</span></label>
-    <label><input type="checkbox" checked data-a="remind"><span><b>Менеджер</b>: напомнить за 3 дня до срока следующего отчёта</span></label>
+    <label><input type="checkbox" checked data-a="xlsx"><span><b>Бухгалтер</b>: расчёт НДС в Excel</span></label>
+    <label><input type="checkbox" checked data-a="app"><span><b>Юрист</b>: заявление на упрощённый НДС 6%</span></label>
+    <label><input type="checkbox" checked data-a="remind"><span><b>Менеджер</b>: напомнить за 3 дня до срока</span></label>
+    <label><input type="checkbox" checked data-a="debt"><span><b>Аналитик</b>: показать дебиторку и пульс денег</span></label>
     <div class="act"><button class="btn btn-primary btn-sm" data-ok>${icon('check', 'sm')}Разрешить</button><button class="btn btn-outline btn-sm" data-no>Не сейчас</button></div>`;
   host.append(el); scrollChat();
   el.querySelector('[data-no]').onclick = () => { el.classList.add('done'); aiMsg('Хорошо, ничего не делаю. Расчёт сохранён как черновик.'); };
@@ -373,23 +672,28 @@ async function doActions(pick) {
     DATES.unshift({ d: '17', m: 'дек', t: 'Напоминание: проверить ЭСФ за ноябрь', s: 'за 3 дня до срока НДС', soon: true, fresh: true });
     renderDates(); logMsg('m', 'напоминание добавлено в Сроки');
   }
+  if (pick.includes('debt')) {
+    setStatus('Аналитик сводит деньги и долги', true); agentBusy('a', true);
+    await sleep(400);
+    openDoc('cashflow');
+    logMsg('a', `остаток ${mln(FIN().closing)}, просроченная дебиторка ${mln(FIN().arOverdue)}`);
+    agentBusy('a', false);
+  }
   approved = true;
   if (currentDoc === 'vat-10' && $('#docState')) { $('#docState').textContent = 'Готов к подписи'; $('#docState').classList.add('dark'); }
   parkCursors(); busy = false;
   setStatus('Готово · ждёт подписи ЭЦП');
   await typing(600);
-  const m = aiMsg(`<p>Сделано. Последний шаг — отправка в налоговую. Её подписываете вы, своей ЭЦП: AI готовит, человек решает.</p>`);
+  const S = FIN();
+  const m = aiMsg(`<p>Сделано. Плюс по деньгам: остаток ≈ <b>${fmt(S.closing)}</b>, просроченная дебиторка <b>${fmt(S.arOverdue)}</b>. Последний шаг — пакет к ЭЦП: AI готовит, вы подписываете.</p>`);
   const el = document.createElement('div'); el.className = 'perm';
-  el.innerHTML = `<h4>${icon('send', 'sm')}Подготовить отправку в my.soliq.uz?</h4><div class="act"><button class="btn btn-primary btn-sm" data-ok>Подготовить</button><button class="btn btn-outline btn-sm" data-no>Позже</button></div>`;
+  el.innerHTML = `<h4>${icon('send', 'sm')}Открыть пакет к ЭЦП (стоп до подписи)?</h4>
+    <label><input type="checkbox" checked disabled><span>Excel + заявление уже в пакете</span></label>
+    <label><input type="checkbox" checked disabled><span>Отправка в my.soliq.uz без вашей ЭЦП невозможна</span></label>
+    <div class="act"><button class="btn btn-primary btn-sm" data-ok>Открыть пакет</button><button class="btn btn-outline btn-sm" data-no>Позже</button></div>`;
   m.querySelector('.body').append(el); scrollChat();
-  el.querySelector('[data-no]').onclick = () => { el.classList.add('done'); aiMsg('Хорошо. Напомню ближе к сроку.'); };
-  el.querySelector('[data-ok]').onclick = async () => {
-    el.classList.add('done');
-    await confirmDialog({ title: 'Демо-режим', icon: 'shield', ok: 'Понятно', cancel: 'Закрыть',
-      html: 'В рабочей версии агент сам откроет кабинет <b>my.soliq.uz</b>, заполнит форму расчёта и <b>остановится перед подписью ЭЦП</b>. В демо отправка не выполняется.' });
-    aiMsg('Форма заполнена и ждёт вашей подписи ЭЦП.');
-    setStatus('Ждёт подписи ЭЦП');
-  };
+  el.querySelector('[data-no]').onclick = () => { el.classList.add('done'); aiMsg('Хорошо. Пакет можно открыть позже: «пакет к ЭЦП».'); };
+  el.querySelector('[data-ok]').onclick = async () => { el.classList.add('done'); await openEcpPack(); };
 }
 
 function makeXlsx() {
@@ -405,7 +709,7 @@ function makeXlsx() {
 }
 $('#export').onclick = () => { if (window._wb) XLSX.writeFile(window._wb, 'Raschet_NDS_oktyabr_2026.xlsx'); };
 
-// ---------- explain (AI cursor) ----------
+// ---------- explain (AI cursor) — like Cash-Flow-National: click any KPI/chart → explain ----------
 const EXPLAIN = {
   sb: () => ({ t: 'Продажи без НДС', v: fmt(C.sb), h: `<p>Сумма колонки «Стоимость без НДС» по <b>${D.sales.length}</b> ЭСФ на реализацию за ${CO.period}.</p>`, s: ['Открыть ЭСФ продаж'] }),
   sv: () => ({ t: 'НДС начислен', v: fmt(C.sv), h: `<p>НДС по ставке 12% из ${D.sales.length} ЭСФ продаж. Проверка: ${fmt(C.sb)} × 12% ≈ ${fmt(C.sb * 0.12)}.</p>`, s: ['Открыть ЭСФ продаж'] }),
@@ -418,70 +722,196 @@ const EXPLAIN = {
   annual: () => ({ t: 'Годовой оборот', v: mlrd(C.annual), h: `<p>Оценка: оборот октября ${fmt(C.sb)} × 12. Порог 12 000 БРВ ≈ ${mlrd(C.limit)}.</p>` }),
   b2b: () => ({ t: 'Покупатели-компании', v: `${C.b2b} из ${D.sales.length}`, h: `<p>ЭСФ, где у покупателя есть ИНН юрлица. Остальные ${D.sales.length - C.b2b} — физлица и ИП без ИНН в ЭСФ.</p>` }),
 };
+function finSnap() { try { return window.FINANCE?.snapshot?.(C) || {}; } catch { return {}; } }
+function financeExplain(el) {
+  const S = finSnap();
+  const ask = el.dataset.ask || el.closest('[data-ask]')?.dataset.ask || '';
+  const name = el.dataset.askName || el.dataset.askTitle || '';
+  const amount = Number(el.dataset.askAmount || 0);
+  const age = Number(el.dataset.askAge || 0);
+  const note = el.dataset.askNote || '';
+  const map = {
+    in_total: () => ({ t: 'Приход месяца', v: fmt(S.inTotal), h: `<p>Все поступления банка и кассы за ${S.period || 'октябрь'}: <b>${fmt(S.inTotal)}</b> сум (${S.opsCount || 0} операций).</p><p>Банк: ${fmt(S.bankIn || 0)}, касса: ${fmt(S.cashIn || 0)}.</p>`, s: ['Кто платил больше всех?', 'Открыть банк'] }),
+    out_total: () => ({ t: 'Расход месяца', v: fmt(S.outTotal), h: `<p>Все исходящие платежи: <b>${fmt(S.outTotal)}</b>. Крупные статьи — аренда, сырьё, зарплата, кредит.</p>`, s: ['На что ушло больше всего?', 'Структура расходов'] }),
+    closing: () => ({ t: 'Остаток', v: fmt(S.closing), h: `<p>Начало месяца ${fmt(S.opening)} + приход − расход = <b>${fmt(S.closing)}</b>.</p><p>Runway ≈ ${S.runwayDays} дней при текущем темпе расходов.</p>`, s: ['Хватит ли на аренду?', 'Ближайшие платежи'] }),
+    runway: () => ({ t: 'Чистый поток / runway', v: `${fmt(S.net)} · ${S.runwayDays} дн.`, h: `<p>Чистый поток = приход − расход = <b>${fmt(S.net)}</b>.</p><p>Runway = остаток / (расход ÷ 30) ≈ <b>${S.runwayDays}</b> дней ликвидности без новых приходов.</p>`, s: ['Что делать сегодня?'] }),
+    ar_total: () => ({ t: 'Дебиторка · итого', v: fmt(S.arTotal), h: `<p>Сколько контрагенты должны вам: <b>${fmt(S.arTotal)}</b> по ${(S.ar || []).length} должникам.</p><p>Это деньги «на бумаге» — пока не пришли на счёт.</p>`, s: ['Кто должен больше всех?', 'Что просрочено?'] }),
+    ap_total: () => ({ t: 'Кредиторка · итого', v: fmt(S.apTotal), h: `<p>Сколько вы должны поставщикам: <b>${fmt(S.apTotal)}</b>.</p>`, s: ['Кому платить первым?'] }),
+    ar_overdue: () => ({ t: 'Просроченная дебиторка', v: fmt(S.arOverdue), h: `<p>Долги с просрочкой срока оплаты: <b>${fmt(S.arOverdue)}</b>. Их можно возвращать звонком / письмом / сверкой.</p>`, s: ['Составить письмо должнику', 'Возможности'] }),
+    ap_soon: () => ({ t: 'К оплате скоро', v: fmt(amount || (S.ap || []).slice(0, 2).reduce((s, x) => s + x.amount, 0)), h: `<p>Ближайшие исходящие обязательства перед поставщиками.</p>`, s: ['График платежей'] }),
+    dso: () => ({ t: 'DSO · дни сбора', v: `${S.collectionDays || 0} дн.`, h: `<p>Days Sales Outstanding ≈ дебиторка ÷ (приход / 30) = <b>${S.collectionDays || 0}</b> дней.</p><p>Чем ниже — тем быстрее деньги от клиентов превращаются в остаток на счёте.</p>`, s: ['Как ускорить сбор?'] }),
+    dpo: () => ({ t: 'DPO · дни оплаты', v: `${S.payDays || 0} дн.`, h: `<p>Days Payable Outstanding ≈ кредиторка ÷ (расход / 30) = <b>${S.payDays || 0}</b> дней.</p><p>Показывает, сколько в среднем вы «держите» деньги перед оплатой поставщикам.</p>`, s: ['Баланс DSO и DPO'] }),
+    debt_share: () => ({ t: 'Доля долгов к обороту', v: `${Math.round((S.arTotal || 0) / Math.max(S.inTotal, 1) * 100)}%`, h: `<p>Дебиторка относительно прихода месяца. Высокая доля — деньги «заморожены» у клиентов.</p>`, s: ['Открыть дебиторку'] }),
+    chart_ar_aging: () => ({ t: 'Aging дебиторки', v: '', h: `<p>Распределение долгов по возрасту: 0 / 1–30 / 31–60 / 60+ дней. Баucket «просрочено» — приоритет взыскания.</p>`, s: ['Кто в 60+?'] }),
+    chart_ap_aging: () => ({ t: 'Aging кредиторки', v: '', h: `<p>Сроки ваших обязательств перед поставщиками по возрастам.</p>`, s: ['Что платить на этой неделе?'] }),
+    chart_ar_mix: () => ({ t: 'Структура дебиторки', v: '', h: `<p>Доля каждого должника в общей сумме. Крупные куски — концентрация риска.</p>`, s: ['Топ должников'] }),
+    chart_ap_mix: () => ({ t: 'Структура кредиторки', v: '', h: `<p>Кому вы должны больше всего — приоритет платежей и переговоров.</p>` }),
+    ar_top: () => ({ t: 'Топ должников', v: fmt(S.arTotal), h: `<p>Список контрагентов, отсортированный по сумме долга. Клик по строке — детали.</p>` }),
+    ap_top: () => ({ t: 'Топ кредиторов', v: fmt(S.apTotal), h: `<p>Крупнейшие исходящие долги.</p>` }),
+    party: () => ({ t: name || 'Контрагент', v: amount ? fmt(amount) : '', h: `<p><b>${esc(name)}</b>${amount ? `: ${fmt(amount)} сум` : ''}${age ? `, ${age} дн.` : ''}${note ? `. ${esc(note)}` : ''}.</p><p>${el.dataset.askKind === 'ar' ? 'Это дебиторка — деньги, которые должны вам.' : 'Это кредиторка — ваши обязательства.'}</p>`, s: el.dataset.askKind === 'ar' ? ['Напомнить о долге', 'Сверка'] : ['Запланировать оплату'] }),
+    rent_month: () => ({ t: 'Аренда / мес', v: '18 000 000', h: `<p>Фиксированная аренда цеха. Следующий платёж — ноябрь.</p>`, s: ['График аренды'] }),
+    credit_pay: () => ({ t: 'Кредит · платёж', v: fmt(S.credit?.monthly || 0), h: `<p>Ежемесячный платёж по кредиту ${esc(S.credit?.bank || '')}. Ближайшая дата: ${esc(S.credit?.nextDue || '')}.</p>` }),
+    credit_left: () => ({ t: 'Остаток кредита', v: fmt(S.credit?.left || 0), h: `<p>Остаток основного долга: <b>${fmt(S.credit?.left || 0)}</b> при ставке ${((S.credit?.rate || 0) * 100).toFixed(0)}%.</p>` }),
+    fixed_load: () => ({ t: 'Фикс. нагрузка', v: fmt(18000000 + (S.credit?.monthly || 0)), h: `<p>Аренда + кредит каждый месяц — обязательный «пол» расходов, который должен покрываться выручкой.</p>` }),
+    chart_flow: () => ({ t: 'Остаток накопительно', v: fmt(S.closing), h: `<p>Кривая остатка день за днём: видно провалы ликвидности и дни крупных расходов/приходов.</p>`, s: ['Где был минимум?'] }),
+    chart_weeks: () => ({ t: '12 недель · маржа', v: '', h: `<p>Недельная динамика маржи (приход − расход) / приход. Падение — сигнал смотреть расходы или отсрочки.</p>` }),
+    chart_pie: () => ({ t: 'Приход / расход', v: '', h: `<p>Соотношение входящих и исходящих потоков за месяц.</p>` }),
+    chart_mix: () => ({ t: 'Структура расходов', v: '', h: `<p>Категории расходов: аренда, сырьё, ФОТ, кредит и прочее — где сидит основная нагрузка.</p>`, s: ['Что резать первым?'] }),
+    chart_wd: () => ({ t: 'По дням недели', v: '', h: `<p>Когда деньги приходят и уходят чаще — полезно для кассового планирования.</p>` }),
+    chart_days: () => ({ t: 'По дням октября', v: '', h: `<p>Дневной приход и расход. Пики часто совпадают с эквайрингом, поставками муки или арендой.</p>` }),
+    chart_rent: () => ({ t: 'Аренда · 6 месяцев', v: '', h: `<p>План арендных платежей на полгода: статусы оплачено / к оплате / план.</p>` }),
+    chart_credit: () => ({ t: 'Кредит · график', v: '', h: `<p>График погашения кредита: тело + проценты по датам.</p>` }),
+    chart_opps: () => ({ t: 'Эффект по возможностям', v: '', h: `<p>Сколько сум можно высвободить действиями: НДС 6%, возврат дебиторки, оптимизация расходов.</p>`, s: ['Что делать сегодня?'] }),
+    opp_plan: () => ({ t: 'Приоритетный план', v: '', h: `<p>Список действий, отсортированный по эффекту в сумах. Сверху — максимальная отдача.</p>` }),
+    opp_item: () => ({ t: name || 'Возможность', v: amount ? fmt(amount) : '', h: `<p>${esc(name)}${amount ? `: эффект ≈ ${fmt(amount)} сум` : ''}.</p><p>Это рекомендация на основе ваших книг, не выдуманная цифра.</p>`, s: ['Сделать это'] }),
+    vat_save: () => ({ t: 'Экономия НДС 6%', v: fmt(C.save), h: `<p>Разница общего режима и упрощённого 6%: <b>${fmt(C.save)}</b> сум/мес.</p>`, s: ['Какие риски?', 'Заявление на 6%'] }),
+    year_potential: () => ({ t: 'Потенциал года', v: fmt((C.save || 0) * 12 + (S.arOverdue || 0)), h: `<p>Грубая оценка: экономия НДС × 12 + просроченная дебиторка, которую можно вернуть сейчас.</p>` }),
+    due_soon: () => ({ t: 'Ближайшие платежи', v: '', h: `<p>Календарь исходящих обязательств на ближайшие дни — аренда, кредит, поставщики.</p>` }),
+    due_item: () => ({ t: name || 'Платёж', v: amount ? fmt(amount) : '', h: `<p>${esc(name)}${amount ? `: ${fmt(amount)} сум` : ''}.</p>` }),
+    top_in: () => ({ t: name || 'Приход', v: amount ? '+' + fmt(amount) : '', h: `<p>Крупный приход от <b>${esc(name)}</b>: ${fmt(amount)} сум.</p>` }),
+    top_out: () => ({ t: name || 'Расход', v: amount ? '−' + fmt(amount) : '', h: `<p>Крупный расход <b>${esc(name)}</b>: ${fmt(amount)} сум.</p>` }),
+    schedule_item: () => ({ t: el.dataset.askKind || 'Платёж', v: amount ? fmt(amount) : '', h: `<p>${esc(el.dataset.askKind || '')}: ${fmt(amount)} · статус «${esc(el.dataset.askStatus || '')}».</p>` }),
+  };
+  if (ask && map[ask]) return map[ask]();
+  return null;
+}
+function genericExplain(el) {
+  const fin = financeExplain(el); if (fin) return fin;
+  const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+  const title = el.querySelector?.('h1,h2,h3,span,b')?.innerText?.trim() || describe(el);
+  return { t: title.slice(0, 80), v: '', h: `<p>${esc(txt.slice(0, 400)) || 'Элемент на экране.'}</p><p class="muted">Спросите в чате подробнее — разберу по вашим данным.</p>`, s: ['Что это значит для меня?'] };
+}
 const pop = $('#pop');
-function closePop() { pop.hidden = true; }
-function openPop(el) {
-  const f = EXPLAIN[el.dataset.x]; if (!f) return;
-  const x = f();
-  pop.dataset.key = el.dataset.x;
-  $('#popTitle').textContent = x.t; $('#popVal').textContent = x.v; $('#popExplain').innerHTML = x.h;
-  $('#popSugg').innerHTML = (x.s || []).map(s => `<button class="chip">${esc(s)}</button>`).join('');
-  $('#popSugg').querySelectorAll('button').forEach(b => b.onclick = () => { closePop(); handleText(b.textContent); });
+let lastExplainEl = null;
+function closePop() { pop.hidden = true; pop.classList.remove('loading'); }
+function placePopNear(el) {
   pop.hidden = false;
-  const r = el.getBoundingClientRect(), pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const r = el.getBoundingClientRect(), pw = pop.offsetWidth || 340, ph = pop.offsetHeight || 220;
   let left = Math.min(innerWidth - pw - 12, Math.max(12, r.left + r.width / 2 - pw / 2));
   let top = r.bottom + 10; if (top + ph > innerHeight - 12) top = Math.max(12, r.top - ph - 10);
   pop.style.left = left + 'px'; pop.style.top = top + 'px';
 }
-// ---------- AI cursor: mark any place on the canvas, then ask about it in chat ----------
-const PICKABLE = '[data-x], .rg tbody tr, .rg tfoot tr, .card-n, .rgm, .save, .risk, .sec-h, .doc-h, .letter .to, .letter h2, .letter p, .letter .draft';
-let targets = []; // [{ el, label, text }]
+function fillPop(x, el) {
+  lastExplainEl = el;
+  pop.dataset.key = el?.dataset?.x || el?.dataset?.ask || '';
+  $('#popTitle').textContent = x.t || 'Объяснение';
+  $('#popVal').textContent = x.v || '';
+  $('#popExplain').innerHTML = x.h || '';
+  $('#popSugg').innerHTML = (x.s || []).map(s => `<button type="button" class="chip">${esc(s)}</button>`).join('');
+  $('#popSugg').querySelectorAll('button').forEach(b => b.onclick = () => { closePop(); if (el && !targets.some(t => t.el === el)) toggleTarget(el); handleText(b.textContent); });
+  placePopNear(el || page);
+}
+function openPop(el) {
+  if (!el) return;
+  if (el.dataset.x && EXPLAIN[el.dataset.x]) fillPop(EXPLAIN[el.dataset.x](), el);
+  else fillPop(genericExplain(el), el);
+  explainWithAi(el);
+}
+async function explainWithAi(el) {
+  const payload = describeElement(el);
+  const localHtml = $('#popExplain').innerHTML;
+  pop.classList.add('loading');
+  const wait = document.createElement('p'); wait.className = 'muted'; wait.id = 'popAiWait'; wait.textContent = 'GLM разбирает…';
+  $('#popExplain').append(wait);
+  try {
+    const r = await fetch('/api/explain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ element: payload, doc: currentDoc, lang: 'ru' }) });
+    if (!r.ok) throw new Error('no api');
+    const j = await r.json();
+    if (j.reply && lastExplainEl === el) {
+      $('#popExplain').innerHTML = `<div class="pop-ai">${md(j.reply)}</div><details class="pop-local"><summary>Краткая справка</summary>${localHtml}</details>`;
+    } else wait.remove();
+  } catch { wait.remove(); }
+  finally { pop.classList.remove('loading'); }
+}
+function describeElement(el) {
+  const cut = (s, n = 1200) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+  const d = { kind: 'element', label: describe(el), text: cut(el.innerText, 1500), section: currentDoc || '', doc: currentDoc || '' };
+  if (el.dataset.x) { d.kind = 'VAT'; d.key = el.dataset.x; const x = EXPLAIN[el.dataset.x]?.(); if (x) { d.label = x.t; d.value = x.v; } }
+  if (el.dataset.ask) { d.kind = 'KPI'; d.key = el.dataset.ask; d.label = el.querySelector('span')?.innerText || d.label; d.value = el.querySelector('b')?.innerText || el.dataset.askAmount || ''; d.hint = el.querySelector('small')?.innerText || el.dataset.askNote || ''; }
+  if (el.matches('canvas') || el.querySelector?.('canvas')) {
+    d.kind = 'chart';
+    const canvas = el.matches('canvas') ? el : el.querySelector('canvas');
+    try {
+      const c = typeof Chart !== 'undefined' && Chart.getChart?.(canvas);
+      if (c) d.chart = { type: c.config?.type, labels: (c.data?.labels || []).slice(-24), datasets: (c.data?.datasets || []).slice(0, 4).map(s => ({ label: s.label, data: (s.data || []).slice(-24) })) };
+    } catch {}
+    d.label = el.querySelector?.('h3')?.innerText || d.label;
+  }
+  if (el.matches('.ax-bar-row, .ax-opp, .ax-due-row, .ax-tl')) { d.kind = 'row'; d.label = el.dataset.askName || el.dataset.askTitle || d.label; d.value = el.dataset.askAmount || ''; }
+  return d;
+}
+
+const PICK = '[data-x],[data-ask],.ax-kpi,.ax-panel,.ax-bar-row,.ax-opp,.ax-due-row,.ax-tl,.ax-ins,.ax-mini > div,.card-n,.rgm,.save,.risk,.sec-h,.doc-h,.rg tbody tr,.rg tfoot tr,.letter .to,.letter h2,.letter p,.letter .draft,canvas,.ax-chart';
+const OWN_UI = '.chat,.pop,.tb,.lp,.ai-cursor-bar,[data-tool],#pickBtn';
+let targets = [];
 const hoverBox = $('#hoverBox');
-function pickTarget(t) {
-  const el = t.closest(PICKABLE);
-  return el && page.contains(el) ? el : null;
+const aiBar = $('#aiCursorBar');
+function pickTarget(raw) {
+  if (!raw || raw.closest?.(OWN_UI)) return null;
+  let el = raw.closest?.(PICK);
+  if (el && el.matches('canvas')) el = el.closest('.ax-panel,[data-ask]') || el;
+  if (!el) {
+    el = raw.closest?.('.ax-kpi, .ax-panel, .card, .sec, tr, p, li, button, a');
+  }
+  if (!el || !page.contains(el) || el === page) return null;
+  if (el.matches('button[data-ax-view], button[data-ax-pop], button[data-opp-act]')) return null;
+  return el;
 }
 function describe(el) {
-  const txt = el.innerText.replace(/\s+/g, ' ').trim();
-  const cut = (x, n = 38) => x.length > n ? x.slice(0, n) + '…' : x;
-  if (el.dataset.x && EXPLAIN[el.dataset.x]) return EXPLAIN[el.dataset.x]().t + ': ' + txt;
+  const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+  const cut = (x, n = 42) => x.length > n ? x.slice(0, n) + '…' : x;
+  if (el.dataset.x && EXPLAIN[el.dataset.x]) return EXPLAIN[el.dataset.x]().t;
+  if (el.dataset.ask) {
+    const fin = financeExplain(el); if (fin?.t) return fin.t;
+    return el.querySelector('span,h3,b')?.innerText?.trim() || cut(txt);
+  }
   if (el.matches('.rg tfoot tr')) return 'Итого реестра';
   if (el.matches('.rg tbody tr')) { const td = [...el.cells].map(c => c.innerText.trim()); return `ЭСФ ${td[3]} · ${cut(td[1], 24)}`; }
-  if (el.matches('.card-n')) return el.querySelector('span').innerText;
-  if (el.matches('.rgm')) return 'Режим: ' + el.querySelector('b').innerText;
+  if (el.matches('.card-n')) return el.querySelector('span')?.innerText || cut(txt);
+  if (el.matches('.rgm')) return 'Режим: ' + (el.querySelector('b')?.innerText || '');
   if (el.matches('.save')) return 'Экономия';
   if (el.matches('.risk')) return 'Риск: ' + cut(txt, 30);
-  if (el.matches('.sec-h')) return 'Раздел: ' + el.querySelector('h3').innerText;
-  if (el.matches('.doc-h')) return 'Документ: ' + el.querySelector('h1').innerText;
+  if (el.matches('.sec-h')) return 'Раздел: ' + (el.querySelector('h3')?.innerText || '');
+  if (el.matches('.doc-h')) return 'Документ: ' + (el.querySelector('h1')?.innerText || '');
+  if (el.matches('.ax-panel')) return el.querySelector('h3')?.innerText || 'Блок аналитики';
   return cut(txt);
 }
 function placeHover(el) {
   if (!el) { hoverBox.classList.remove('on'); return; }
   const r = el.getBoundingClientRect(), b = inner.getBoundingClientRect();
-  Object.assign(hoverBox.style, { left: r.left - b.left - 3 + 'px', top: r.top - b.top - 3 + 'px', width: r.width + 6 + 'px', height: r.height + 6 + 'px' });
-  $('#hoverTag').textContent = (targets.some(x => x.el === el) ? 'Снять · ' : 'Отметить · ') + describe(el);
+  Object.assign(hoverBox.style, { left: r.left - b.left - 3 + 'px', top: r.top - b.top - 3 + 'px', width: Math.max(24, r.width + 6) + 'px', height: Math.max(24, r.height + 6) + 'px' });
+  $('#hoverTag').textContent = (e => e.shiftKey ? 'В чат · ' : 'Объяснить · ')(window._aiShift || { shiftKey: false }) + describe(el);
   hoverBox.classList.add('on');
 }
-page.addEventListener('mousemove', e => { if (tool === 'ai') placeHover(pickTarget(e.target)); });
+function onAiMove(e) {
+  if (tool !== 'ai') return;
+  window._aiShift = e;
+  placeHover(pickTarget(e.target));
+}
+function onAiClick(e) {
+  if (tool !== 'ai') return;
+  if (e.target.closest?.(OWN_UI)) return;
+  const el = pickTarget(e.target); if (!el) return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.shiftKey) { toggleTarget(el); placeHover(el); return; }
+  el.classList.add('picked');
+  setTimeout(() => { if (!targets.some(t => t.el === el)) el.classList.remove('picked'); }, 1400);
+  openPop(el);
+}
+page.addEventListener('mousemove', onAiMove);
 page.addEventListener('mouseleave', () => placeHover(null));
 canvas.addEventListener('scroll', () => placeHover(null), true);
-page.addEventListener('click', e => {
-  if (tool !== 'ai') return;
-  const el = pickTarget(e.target); if (!el) return;
-  e.preventDefault(); toggleTarget(el); placeHover(el);
-});
-page.addEventListener('contextmenu', e => { // right click: explain right away
+page.addEventListener('click', onAiClick, true);
+page.addEventListener('contextmenu', e => {
   if (tool !== 'ai') return;
   const el = pickTarget(e.target); if (!el) return;
   e.preventDefault();
-  if (el.dataset.x) return openPop(el);
-  if (!targets.some(x => x.el === el)) toggleTarget(el);
-  sendMarked('Объясни, что здесь написано и что это значит для меня');
+  openPop(el);
 });
 function toggleTarget(el) {
   const i = targets.findIndex(x => x.el === el);
   if (i >= 0) { el.classList.remove('picked'); targets.splice(i, 1); }
-  else { el.classList.add('picked'); targets.push({ el, label: describe(el), text: el.innerText.replace(/\s+/g, ' ').trim().slice(0, 500) }); }
+  else { el.classList.add('picked'); targets.push({ el, label: describe(el), text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 500) }); }
   renderTargets();
   if (i < 0 && targets.length === 1) { $('#chat').classList.add('open'); $('#chatInput').focus(); }
 }
@@ -492,21 +922,30 @@ function renderTargets() {
     + (targets.length > 1 ? `<button type="button" class="att clear" id="clearT">Снять все · ${targets.length}</button>` : '');
   $('#attached').querySelectorAll('[data-i]').forEach(b => b.onclick = () => toggleTarget(targets[+b.dataset.i].el));
   $('#clearT')?.addEventListener('click', clearTargets);
-  $('#chatInput').placeholder = targets.length ? 'Что спросить про отмеченное?' : 'Спросите про налоги, отчёты, сроки…';
+  $('#chatInput').placeholder = targets.length ? 'Что спросить про отмеченное?' : 'Спросите про налоги, деньги, дебиторку…';
 }
 function sendMarked(q) { $('#chatInput').value = ''; handleText(q || 'Объясни отмеченное'); }
-$('#popAsk').onclick = () => { const key = $('#pop').dataset.key; const el = page.querySelector(`[data-x="${CSS.escape(key || '')}"]`); closePop(); if (el && !targets.some(x => x.el === el)) toggleTarget(el); $('#chatInput').focus(); };
+$('#popAsk').onclick = () => {
+  const el = lastExplainEl;
+  closePop();
+  if (el && !targets.some(x => x.el === el)) toggleTarget(el);
+  $('#chat').classList.add('open');
+  $('#chatInput').focus();
+};
 $('#popClose').onclick = closePop;
-addEventListener('mousedown', e => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('[data-x]')) closePop(); });
+addEventListener('mousedown', e => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('[data-x],[data-ask],.ax-kpi,.ax-panel,.ax-bar-row')) closePop(); });
 
 function setTool(t) {
   tool = t;
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   canvas.classList.toggle('ai', t === 'ai');
+  document.documentElement.classList.toggle('ai-cursor-on', t === 'ai');
+  if (aiBar) aiBar.hidden = t !== 'ai';
   if (t !== 'ai') { closePop(); placeHover(null); }
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
-$('#pickBtn').onclick = () => { setTool('ai'); toast('Кликайте по местам в документе: они добавятся в чат. Правый клик — сразу объяснить', 'ai-cursor'); };
+$('#pickBtn').onclick = () => { setTool('ai'); toast('ИИ-курсор: клик по цифре/графику — объяснить. Shift+клик — в чат', 'ai-cursor'); };
+$('#aiCursorOff')?.addEventListener('click', () => setTool('select'));
 
 // ---------- text intents (local), backend if available ----------
 const chatHist = [];
@@ -570,7 +1009,7 @@ async function runAction({ name, args = {} }) {
     openDoc(args.id); return;
   }
   if (name === 'show_deadlines') { document.querySelector('[data-tab="dates"]').click(); return; }
-  if (name === 'show_home') { closePop(); currentDoc = null; renderTree(); page.innerHTML = ''; $('#frameUrl').textContent = 'hisob.ai'; showStart(true); return; }
+  if (name === 'show_home') { activateHome(); return; }
   if (name === 'prepare_actions') {
     if (!reportDone) return runReport();
     if (approved) return aiMsg('<p>Excel и заявление уже подготовлены: они в «Документах».</p>');
@@ -610,7 +1049,6 @@ async function runAction({ name, args = {} }) {
 }
 
 // ---------- documents written by the model ----------
-const CREATED = {}; let docSeq = 0, lastCreated = null;
 function mdToHtml(md) {
   const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
   const out = []; let cur = null, buf = [];
@@ -642,8 +1080,7 @@ async function createDocument(a) {
   lastCreated = id;
   addDoc('Созданные', { id, nm: CREATED[id].title, tag: CREATED[id].kind, cls: 'new', ic: 'file' });
   closePop(); if (targets.length) clearTargets();
-  currentDoc = id; renderTree(); showStart(false);
-  $('#frameUrl').textContent = CREATED[id].title + ' · черновик';
+  currentDoc = id; ensureTab(id); renderTree(); showStart(false);
   if (geoMap) { geoMap.remove(); geoMap = null; }
   page.innerHTML = createdDocHtml(id); canvas.scrollTop = 0;
   // the agent "writes" the document block by block
@@ -738,14 +1175,52 @@ function requestDocument(what) {
   setTimeout(() => d.classList.remove('ask'), 7000);
 }
 
+/** Offline/local draft when LLM unavailable — same create_document path as online */
+function localDraftDocument(s) {
+  const isApp = /заявлен|ariza|упрощ|6\s*%|уп-?100/.test(s);
+  const isOrder = /приказ|buyruq|назнач/.test(s);
+  const isMemo = /записк|doklad|доклад|inventar|инвентар/.test(s);
+  const kind = isApp ? 'заявление' : isOrder ? 'приказ' : isMemo ? 'записка' : 'письмо';
+  const title = isApp ? 'Заявление · упрощённый НДС 6%'
+    : isOrder ? 'Приказ · черновик'
+    : isMemo ? 'Служебная записка · черновик'
+    : 'Письмо · черновик';
+  const body = isApp
+    ? `>> В государственную налоговую инспекцию\n>> от ${CO.name}\n>> ИНН ${CO.inn}\n\n# ЗАЯВЛЕНИЕ\n## о переходе на упрощённый порядок исчисления НДС\n\nПрошу применять упрощённый порядок исчисления НДС по ставке 6% в соответствии с УП-100, начиная с первого числа месяца, следующего за месяцем подачи.\n\nВид деятельности: производство и торговля хлебобулочными изделиями.\nОборот за ${CO.period}: ${fmt(C.sb)} сум без НДС.\n\nЧерновик Hisob AI — перед подачей сверить официальную форму и подписать ЭЦП.\n\nРуководитель ____________\n«___» __________ 20__`
+    : `>> Кому: ________\n>> От кого: ${CO.name} · ИНН ${CO.inn}\n\n# ${title.replace(' · черновик', '')}\n\nТекст черновика (офлайн-режим). Уточните детали в чате при подключении AI — перепишу полностью.\n\nТема: ${s.slice(0, 120)}\n\nРуководитель ____________\n«___» __________ 20__`;
+  return { title, kind, body };
+}
+
 // Offline fallback (no server / no key): keyword intents.
 async function localAnswer(s) {
+  if (/сегодня|bugun|план дня|3 действ|nima qil/.test(s)) return openDoc('today'), aiMsg('<p>План на сегодня на холсте: НДС, дебиторка, пакет к ЭЦП.</p>');
+  if (/деньг|касс|банк|pul|cash|поток|оқим|kirim|chiqim/.test(s)) return openDoc('cashflow'), aiMsg(`<p>Пульс денег: приход <b>${fmt(FIN().inTotal)}</b>, расход <b>${fmt(FIN().outTotal)}</b>, остаток ≈ <b>${fmt(FIN().closing)}</b>.</p>`);
+  if (/дебитор|должн|qarz|нам должны|kechik/.test(s)) return openDoc('ar'), aiMsg(`<p>Дебиторка <b>${fmt(FIN().arTotal)}</b>, просрочено <b>${fmt(FIN().arOverdue)}</b>.</p>`);
+  if (/кредитор|мы должны|ijara|аренд|кредит|ssuda/.test(s)) return openDoc(/аренд|ijara/.test(s) ? 'rent' : /кредит|ssuda/.test(s) ? 'credit' : 'ap'), aiMsg('<p>Открыл обязательства на холсте.</p>');
+  if (/возможност|imkon|оптимал|что выгод|qayerda.*tej/.test(s)) return openDoc('opps'), aiMsg('<p>Возможности на холсте: НДС 6%, дебиторка, кассовый разрыв.</p>');
+  if (/прогноз|forecast|bashorat|prediction|trade.*прог|следующ.*(недел|месяц)|kelasi.*(hafta|oy)|xgboost/.test(s)) {
+    openDoc('forecast');
+    return window.FINANCE.ensure?.().then(() => {
+      const F = FIN().forecast || {};
+      aiMsg(`<p>XGBoost · ноябрь: приход <b>${fmt(F.nextMonthIn || 0)}</b> (${F.growthIn >= 0 ? '+' : ''}${F.growthIn || 0}% к октябрю), WAPE нед. ${F.wapeIn || 0}%. Категории: сырьё, коммунальные, налог, аренда…</p>`);
+    }).catch(() => aiMsg('<p>Открыл прогноз. Модель ещё считается на сервере.</p>'));
+  }
+  if (/(созда|напиш|подготов|ёзиб|yoz|tayyorla).*(документ|hujjat|заявлен|приказ|письм|записк|ariza|buyruq)|(заявлен|приказ|письм|записк).*(созда|напиш|подготов)/.test(s)
+    || /заявлен.*ндс|ariza.*qqs|упрощённ.*ндс/.test(s)) {
+    const draft = localDraftDocument(s);
+    await createDocument(draft);
+    return aiMsg(`<p>Черновик «${esc(draft.title)}» на холсте. Можно скачать PDF/Word. Полный AI-текст — когда сервер онлайн.</p>`);
+  }
+
+  if (/эцп|ecp|отправ|soliq.*yubor|пакет/.test(s)) return openEcpPack();
   if (/ндс|qqs|расч[её]т|отч[её]т|hisobot|подготов|tayyorla|собер/.test(s)) return runReport();
   if (/риск|xavf/.test(s)) return aiMsg(reportDone ? `<p>Юрист выделил три риска: покупатели-компании (${C.b2b} из ${D.sales.length}) могут потерять зачёт НДС, оборот рядом с порогом ${mlrd(C.limit)}, и входной НДС ${mln(C.pv)} в месяц больше не зачитывается.</p>` : '<p>Сначала соберу расчёт — скажите «подготовь НДС за октябрь».</p>');
   if (/срок|muddat|когда|qachon/.test(s)) { document.querySelector('[data-tab="dates"]').click(); return aiMsg(`<p>Ближайшие сроки:</p><p>${DATES.slice(0, 3).map(d => `<b>${d.d} ${d.m}</b> — ${esc(d.t)}`).join('<br>')}</p>`); }
+  if (/soliq|дидокс|didox|1[cс]|одинэс|подключ|ulanish|связ/.test(s)) { document.querySelector('[data-tab="links"]')?.click(); return aiMsg('<p>Открыл вкладку <b>Связи</b>: Soliq, 1С и Didox. Песочница работает сразу; для боя вставьте token или логин кабинета и нажмите «Синхронизировать».</p>'); }
   if (/сэконом|экономи|меньше|режим|tejash|ortiqcha|переплач/.test(s)) return aiMsg(reportDone ? `<p>Упрощённый НДС 6% вместо общего режима: минус <b>${mln(C.save)}</b> в месяц на НДС и налог на прибыль 0%.</p>` : '<p>Посчитаю на ваших данных — скажите «подготовь НДС за октябрь».</p>');
   if (/почему|откуда|nega|qayerdan/.test(s)) { setTool('ai'); return aiMsg('<p>Включил ИИ-курсор: кликните по цифре в отчёте.</p>'); }
-  aiMsg('<p>Сервер AI сейчас недоступен. Без него я понимаю задачи про НДС, сроки, режимы и риски.</p>');
+  aiMsg('<p>Могу: НДС, документы (заявление/приказ/письмо), пульс денег, прогноз trade, дебиторка, пакет к ЭЦП, сроки.</p>');
+
 }
 const md = t => esc(t).split(/\n{2,}/).map(p => '<p>' + p.replace(/^#{1,6}\s*(.+)$/gm, '<b>$1</b>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>') + '</p>').join('');
 async function askBackend(voice = false) {
@@ -753,14 +1228,15 @@ async function askBackend(voice = false) {
   const n = x => String(Math.round(x));
   const ctx = [
     `Компания: ${CO.name}, ИНН ${CO.inn}. Режим: ${CO.regime} (${CO.regimeSub}).`,
-    `Период: ${CO.period}. Источник: ${D.sales.length} ЭСФ продаж и ${D.purchases.length} ЭСФ покупок.`,
+    `Период: ${CO.period}. Источник данных ЭСФ: ${CO.source || 'demo'} (${ { demo: 'демо-файл', soliq: 'my.soliq / выгрузка', didox: 'Didox', onedc: '1С' }[CO.source] || CO.source }). Реестры: ${D.sales.length} ЭСФ продаж и ${D.purchases.length} ЭСФ покупок.`,
     `Продажи без НДС: ${n(C.sb)} сум. НДС начислен (12%): ${n(C.sv)} сум. Оборот с НДС: ${n(C.gross)} сум.`,
     `Покупки без НДС: ${n(C.pb)} сум. НДС к зачёту: ${n(C.pv)} сум. Не в зачёт: ${C.nonded.length} ЭСФ (поставщик не плательщик НДС).`,
     `НДС к уплате на общем режиме: ${n(C.pay)} сум.`,
     `Упрощённый НДС по УП-100: ставка 6% со всего оборота, налог на прибыль 0%, входной НДС не зачитывается, действует до 01.01.2030. Сумма: ${n(C.simp)} сум. Экономия на НДС: ${n(C.save)} сум в месяц, ${n(C.save * 12)} сум в год.`,
-    `Налог на прибыль на общем режиме: 15%. Сумма прибыли неизвестна (нужна банковская выписка).`,
+    `Налог на прибыль на общем режиме: 15%. Сумма прибыли неизвестна (нужна детализация расходов сверх выписки).`,
     `Налог с оборота: недоступен, годовой оборот (октябрь × 12) ${n(C.annual)} сум выше порога 12000 БРВ = ${n(C.limit)} сум.`,
     `Покупатели-компании: ${C.b2b} из ${D.sales.length} ЭСФ продаж.`,
+    ...window.FINANCE.contextLines({ pay: C.pay, simp: C.simp, save: C.save }),
     `Сроки: ${DATES.map(d => `${d.d} ${d.m} — ${d.t}`).join('; ')}.`,
     `Отчёт ${reportDone ? 'собран' : 'ещё не собран'}${approved ? ', Excel и заявление подготовлены' : ''}.`,
     `Документы в пространстве: ${DOCS.flatMap(g => g.items).map(x => x.nm).join(', ')}.`,
@@ -768,8 +1244,8 @@ async function askBackend(voice = false) {
     `Сегодня: ${new Date().toLocaleDateString('ru-RU')}.`,
     geoContext(),
     ...Object.values(SOCIAL).map(x => `Соцсеть ${x.platform} @${x.handle || x.url} (${x.title || ''}): подписчики ${x.followers ?? '—'}; ${x.stats ? `разобрано ${x.stats.posts_analyzed} постов, средние ${x.stats.metric} ${x.stats['avg_' + x.stats.metric]}, медиана ${x.stats['median_' + x.stats.metric]}, вовлечённость ${x.stats.engagement_pct}%, постов в неделю ${x.stats.posts_per_week}; лучший формат ${x.stats.by_type[0]?.key} (${x.stats.by_type[0]?.avg}); лучший день ${x.stats.by_weekday[0]?.key}` : 'только публичные счётчики'}${x.advice?.summary ? '; вывод маркетолога: ' + x.advice.summary : ''}`),
-    `Неизвестно (не называть цифры): зарплаты, цены на рынке, расходы на бухгалтера, прибыль, данные других компаний. ФИО руководителя, адрес, банковские реквизиты, список сотрудников — неизвестны.`,
-    `Файлы-заглушки без содержимого (в демо не загружены): Банковская выписка · окт, Договор аренды цеха, Докладная · инвентаризация.`,
+    `Неизвестно (не называть цифры): рыночные цены, расходы на внешнего бухгалтера, прибыль после всех затрат, данные других компаний. ФИО руководителя — неизвестно.`,
+    `Зарплатный фонд за октябрь (аванс из банка): 28000000 сум — это факт из банковской выписки, полный ФОТ за месяц может быть выше.`,
     ...(Object.keys(CREATED).length ? ['Созданные документы (id, название, текст):', ...Object.entries(CREATED).map(([k, v]) => `[${k}] ${v.title}:\n${v.md.slice(0, 1500)}`)] : []),
   ].join('\n');
   const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx, voice, docs: DOCS.flatMap(g => g.items).map(({ id, nm }) => ({ id, nm })), messages: chatHist.slice(-10) }) });
@@ -781,7 +1257,7 @@ $('#composer').addEventListener('submit', e => { e.preventDefault(); const t = $
 $('#chatInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#composer').requestSubmit(); } });
 $('#startForm').addEventListener('submit', e => { e.preventDefault(); handleText($('#startInput').value || $('#startInput').placeholder); });
 $('#startInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#startForm').requestSubmit(); } });
-const CHIPS = ['Подготовь НДС за октябрь и найди, где переплачиваю', 'Какие у меня сроки?', 'Oktabr uchun QQS hisobotini tayyorla'];
+const CHIPS = ['Подготовь НДС и найди, где переплачиваю', 'Напиши заявление на упрощённый НДС 6%', 'Покажи пульс денег и долги', 'Сегодня: 3 действия', 'Пакет к ЭЦП'];
 $('#startChips').innerHTML = CHIPS.map(c => `<button class="chip">${esc(c)}</button>`).join('');
 $('#startChips').querySelectorAll('button').forEach(b => b.onclick = () => handleText(b.textContent));
 
@@ -815,12 +1291,180 @@ function startVoice() {
 $('#micBtn').onclick = startVoice; $('#micTool').onclick = startVoice; $('#startMic').onclick = startVoice;
 $('#ttsBtn').onclick = () => { ttsOn = !ttsOn; $('#ttsBtn').classList.toggle('btn-primary', ttsOn); $('#ttsBtn').classList.toggle('btn-ghost', !ttsOn); toast(ttsOn ? 'Ответы будут озвучиваться' : 'Озвучка выключена', 'volume'); };
 
-// ---------- upload ----------
-function addFiles(files) {
-  [...files].forEach(f => {
-    addDoc('Загружено', { id: 'up-' + crypto.randomUUID(), nm: f.name, tag: (f.name.split('.').pop() || '').toUpperCase().slice(0, 4), ic: /xls|csv/i.test(f.name) ? 'sheet' : 'file' });
-    logMsg('b', `прочитал «${f.name}», положил в Документы`);
-  });
+// ---------- upload + Soliq/1C/Didox ----------
+const INT_LABEL = { soliq: 'Soliq', didox: 'Didox', onedc: '1С' };
+let intState = null;
+
+async function apiJSON(url, opts) {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+function setSourcePill(st) {
+  const src = st?.activeSource;
+  const prov = (st?.providers || []).find(p => p.id === src)?.connection;
+  const real = src && src !== 'demo' && prov?.mode === 'live' && prov?.hasSecret;
+  const sand = src && src !== 'demo' && !real;
+  $('#srcPill')?.classList.toggle('live', !!real);
+  const n = st?.live ? `${st.live.sales}/${st.live.purchases} ЭСФ` : '';
+  $('#srcTxt').textContent = real
+    ? `Источник: ${INT_LABEL[src]} (боевой) · ${n}`
+    : sand
+      ? `Источник: ${INT_LABEL[src] || src} · песочница · ${n}`
+      : 'Источник: демо-данные';
+}
+
+function renderIntegrations(st) {
+  intState = st;
+  setSourcePill(st);
+  const box = $('#intList'); if (!box) return;
+  box.innerHTML = (st.providers || []).map(p => {
+    const c = p.connection || {};
+    const live = c.status === 'connected' && c.mode === 'live' && c.hasSecret;
+    const sand = c.status === 'connected' && !live;
+    const stCls = live ? 'on' : sand ? 'sand' : c.status === 'error' ? 'err' : '';
+    const stTxt = live ? 'боевой' : sand ? 'песочница' : c.status === 'error' ? 'ошибка' : 'нет связи';
+    const fields = (p.fields || []).map(f => `<label>${esc(f.label)}<input data-f="${esc(f.key)}" type="${f.secret ? 'password' : 'text'}" placeholder="${esc(f.placeholder || '')}" value="${f.secret ? '' : esc(c[f.key] || '')}" autocomplete="off"></label>`).join('');
+    const hint = c.lastError
+      ? esc(c.lastError)
+      : live
+        ? `Боевой API · синхр. ${c.lastSync ? new Date(c.lastSync).toLocaleString('ru-RU') : '—'}`
+        : sand
+          ? `Песочница (не Didox/Soliq/1С кабинет). Синхр. ${c.lastSync ? new Date(c.lastSync).toLocaleString('ru-RU') : '—'}`
+          : 'Песочница — сразу. Боевой — нужен token/логин кабинета.';
+    return `<div class="int" data-id="${p.id}">
+      <div class="int-h"><span class="badge ${p.id}">${esc(p.name).slice(0, 2).toUpperCase()}</span><div class="meta"><b>${esc(p.title)}</b><span>${esc(p.blurb)}</span></div><span class="int-st ${stCls}">${stTxt}</span></div>
+      <div class="int-mode"><button type="button" data-mode="sandbox" class="${(c.mode || 'sandbox') !== 'live' ? 'on' : ''}">Песочница</button><button type="button" data-mode="live" class="${c.mode === 'live' ? 'on' : ''}">Боевой API</button></div>
+      <div class="int-fields">${fields}</div>
+      <div class="int-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-act="sync">Синхр. ЭСФ</button>
+        <div class="row">
+          <button type="button" class="btn btn-outline btn-sm" data-act="toggle">Настроить</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-act="disconnect" ${c.status === 'connected' ? '' : 'hidden'}>Отключить</button>
+        </div>
+      </div>
+      <div class="int-msg ${c.lastError ? 'err' : sand ? '' : live ? 'ok' : ''}">${hint}</div>
+    </div>`;
+  }).join('');
+}
+
+async function refreshIntegrations() {
+  try { renderIntegrations(await apiJSON('/api/integrations')); } catch (e) { console.warn(e); }
+}
+
+function intPayload(card) {
+  const mode = card.querySelector('.int-mode button.on')?.dataset.mode || 'sandbox';
+  const body = { mode };
+  card.querySelectorAll('[data-f]').forEach(inp => { if (inp.value) body[inp.dataset.f] = inp.value; });
+  return body;
+}
+
+$('#intList')?.addEventListener('click', async e => {
+  const card = e.target.closest('.int'); if (!card) return;
+  const id = card.dataset.id;
+  const modeBtn = e.target.closest('[data-mode]');
+  if (modeBtn) {
+    card.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b === modeBtn));
+    card.classList.toggle('open', modeBtn.dataset.mode === 'live');
+    return;
+  }
+  const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return;
+  const msg = card.querySelector('.int-msg');
+  try {
+    if (act === 'toggle') { card.classList.toggle('open'); return; }
+    if (act === 'disconnect') {
+      renderIntegrations(await apiJSON(`/api/integrations/${id}/disconnect`, { method: 'POST', body: '{}' }));
+      const books = (await apiJSON('/api/integrations/data')).books;
+      applyBooks(books); toast('Отключено: ' + (INT_LABEL[id] || id), 'link'); return;
+    }
+    if (act === 'sync') {
+      msg.textContent = 'Подключаю и синхронизирую…'; msg.className = 'int-msg';
+      const body = intPayload(card);
+      await apiJSON(`/api/integrations/${id}/connect`, { method: 'POST', body: JSON.stringify(body) });
+      const out = await apiJSON(`/api/integrations/${id}/sync`, { method: 'POST', body: JSON.stringify({ period: CO.period }) });
+      applyBooks(out.books);
+      await refreshIntegrations();
+      addDoc('Данные', { id: 'esf-s', nm: 'ЭСФ · продажи', tag: String(D.sales.length), ic: 'file' });
+      addDoc('Данные', { id: 'esf-p', nm: 'ЭСФ · покупки', tag: String(D.purchases.length), ic: 'file' });
+      toast(`${INT_LABEL[id] || id}: ${out.data.sales} продаж, ${out.data.purchases} покупок`, 'check');
+      logMsg('b', `синхронизировал ЭСФ из ${INT_LABEL[id] || id}`);
+      aiMsg(`<p>Подтянул ЭСФ из <b>${INT_LABEL[id] || id}</b>: ${out.data.sales} продаж и ${out.data.purchases} покупок. Могу сразу собрать расчёт НДС.</p>`);
+      return;
+    }
+  } catch (err) {
+    msg.textContent = err.message; msg.className = 'int-msg err';
+    toast(err.message, 'alert');
+  }
+});
+
+function sheetToInvoices(wb) {
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const sales = [], purchases = [];
+  const pick = (r, keys) => { for (const k of keys) { const hit = Object.keys(r).find(x => x.toLowerCase().replace(/\s/g, '') === k.toLowerCase().replace(/\s/g, '')); if (hit != null && r[hit] !== '') return r[hit]; } return ''; };
+  for (const r of rows) {
+    const kind = String(pick(r, ['type', 'вид', 'тип', 'направление']) || '');
+    const row = {
+      name: pick(r, ['name', 'контрагент', 'покупатель', 'поставщик', 'наименование']),
+      inn: pick(r, ['inn', 'инн', 'stir']),
+      num: pick(r, ['num', 'номер', '№', 'esf', 'эсф']),
+      date: pick(r, ['date', 'дата']),
+      base: pick(r, ['base', 'без ндс', 'сумма без ндс', 'deliverySum']),
+      vat: pick(r, ['vat', 'ндс', 'сумма ндс']),
+      note: pick(r, ['note', 'зачёт', 'примечание']),
+    };
+    const asPurchase = /покуп|purchase|in|вход/i.test(kind) || /поставщик/i.test(String(Object.keys(r).join(' ')));
+    (asPurchase ? purchases : sales).push(row);
+  }
+  // if all went to sales but file looks like purchases registry
+  if (!purchases.length && /покуп|purchase/i.test(wb.SheetNames[0])) return { sales: [], purchases: sales };
+  return { sales, purchases };
+}
+
+async function ingestEsfFile(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'json') {
+    const text = await file.text();
+    const body = JSON.parse(text);
+    const out = await apiJSON('/api/integrations/import', { method: 'POST', body: JSON.stringify(body) });
+    applyBooks(out.books); await refreshIntegrations();
+    return out;
+  }
+  if (ext === 'csv') {
+    const csv = await file.text();
+    const out = await apiJSON('/api/integrations/import', { method: 'POST', body: JSON.stringify({ csv, source: 'soliq' }) });
+    applyBooks(out.books); await refreshIntegrations();
+    return out;
+  }
+  if (/xlsx|xls/i.test(ext) && window.XLSX) {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const parsed = sheetToInvoices(wb);
+    if (!parsed.sales.length && !parsed.purchases.length) throw new Error('В Excel не нашёл колонки ЭСФ (контрагент, сумма, НДС)');
+    const out = await apiJSON('/api/integrations/import', { method: 'POST', body: JSON.stringify({ ...parsed, source: 'soliq', period: CO.period }) });
+    applyBooks(out.books); await refreshIntegrations();
+    return out;
+  }
+  return null;
+}
+
+async function addFiles(files) {
+  for (const f of [...files]) {
+    addDoc('Загружено', { id: 'up-' + crypto.randomUUID(), nm: f.name, tag: (f.name.split('.').pop() || '').toUpperCase().slice(0, 4), ic: /xls|csv|json/i.test(f.name) ? 'sheet' : 'file' });
+    try {
+      const out = await ingestEsfFile(f);
+      if (out) {
+        logMsg('b', `загрузил ЭСФ из «${f.name}»: ${out.data.sales} / ${out.data.purchases}`);
+        toast(`ЭСФ из файла: ${out.data.sales} продаж, ${out.data.purchases} покупок`, 'check');
+        document.querySelector('[data-tab="links"]')?.click();
+      } else logMsg('b', `прочитал «${f.name}», положил в Документы`);
+    } catch (e) {
+      logMsg('b', `«${f.name}»: ${e.message}`);
+      toast(e.message, 'alert');
+    }
+  }
 }
 $('#file').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
 $('#uploadTool').onclick = () => $('#file').click();
@@ -828,6 +1472,12 @@ const drop = $('#drop');
 ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+refreshIntegrations().then(async () => {
+  try {
+    const { books } = await apiJSON('/api/integrations/data');
+    if (books?.source && books.source !== 'demo') applyBooks(books);
+  } catch { /* first run */ }
+});
 
 // ---------- misc ----------
 $('#tree').addEventListener('click', e => { const n = e.target.closest('[data-doc]'); if (n && !busy) openDoc(n.dataset.doc); });
@@ -881,8 +1531,7 @@ const CATS = [
 const RADIUS = 300;
 
 function renderGeo() {
-  currentDoc = 'geo'; renderTree(); showStart(false);
-  $('#frameUrl').textContent = 'Геомодель · карта предприятия';
+  currentDoc = 'geo'; ensureTab('geo'); renderTree(); showStart(false);
   page.innerHTML = `<div class="doc geo">
     <div class="doc-h"><div><h1>Где находится ваше предприятие</h1><p>${CO.name} · кликните на карте или найдите адрес</p></div>
       <div class="seg" id="mapMode"><button data-m="2d">2D</button><button data-m="3d">3D</button></div></div>
@@ -1049,7 +1698,6 @@ async function showGeo(a = {}) {
 // =====================================================================
 // SOCIAL: what the marketer read with Playwright
 // =====================================================================
-const SOCIAL = {};
 const nf = n => n == null ? '—' : Math.round(n).toLocaleString('ru-RU');
 const TYPE_COLOR = { фото: '#ff2e88', видео: '#2563eb', альбом: '#7c3aed', текст: '#71717a', медиа: '#a1a1aa', опрос: '#f59e0b', файл: '#059669', голос: '#0891b2', reels: '#2563eb', карусель: '#7c3aed' };
 function socialHtml(id) {

@@ -11,6 +11,9 @@
 <script src="/assets/icons.js"></script>
 <script src="/assets/app.js"></script>
 <script src="/assets/data.js"></script>
+<script src="/assets/finance.js"></script>
+<script src="/assets/analytics-ui.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
@@ -47,14 +50,15 @@
     <div class="lp-tabs">
       <button class="on" data-tab="docs"><svg class="i sm"><use href="#i-folder"/></svg>Документы</button>
       <button data-tab="dates"><svg class="i sm"><use href="#i-calendar"/></svg>Сроки <span class="count" id="dateCount">0</span></button>
+      <button data-tab="links"><svg class="i sm"><use href="#i-link"/></svg>Связи</button>
     </div>
     <div class="lp-body" data-pane="docs">
       <div class="tree" id="tree"></div>
       <label class="drop sm" id="drop">
-        <input type="file" id="file" multiple hidden>
+        <input type="file" id="file" multiple hidden accept=".xlsx,.xls,.csv,.json,.pdf,.doc,.docx,image/*">
         <span class="drop-ic"><svg class="i"><use href="#i-upload"/></svg></span>
-        <b>Перетащите отчёты, выписки, Excel</b>
-        <span>Агенты прочитают и разложат по папкам</span>
+        <b>Перетащите ЭСФ Excel / JSON</b>
+        <span>Soliq · 1С · Didox выгрузки тоже сюда</span>
       </label>
       <div class="regime" id="regimeBox"></div>
     </div>
@@ -62,13 +66,21 @@
       <div class="dates" id="dates"></div>
       <p class="hint-s">Сроки — демо-данные. Перед питчем сверить с Налоговым кодексом.</p>
     </div>
+    <div class="lp-body" data-pane="links" hidden>
+      <div class="src-pill" id="srcPill"><span class="dot"></span><span id="srcTxt">Источник: демо</span></div>
+      <div class="int-list" id="intList"></div>
+      <p class="hint-s">Песочница работает сразу. Боевой режим — token/логин вашего кабинета. Секреты хранятся только на этом компьютере (`data/`, не в git).</p>
+    </div>
   </aside>
 
   <!-- canvas -->
   <section class="canvas" id="canvas">
     <div class="canvas-inner" id="inner">
       <div class="frame" id="frame">
-        <div class="frame-bar"><div class="dots"><i></i><i></i><i></i></div><div class="frame-url" id="frameUrl">hisob.ai</div></div>
+        <div class="frame-bar">
+          <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="btabs" id="btabs" role="tablist" aria-label="Открытые документы"></div>
+        </div>
         <div class="page" id="page"></div>
         <div class="start" id="start">
           <div class="start-ic"><svg class="i xl"><use href="#i-sparkle"/></svg></div>
@@ -108,6 +120,13 @@
       </div>
     </form>
   </aside>
+</div>
+
+<!-- AI cursor mode bar (Cash-Flow-National style) -->
+<div class="ai-cursor-bar" id="aiCursorBar" hidden>
+  <svg class="i sm"><use href="#i-ai-cursor"/></svg>
+  <span>ИИ-курсор: кликните по цифре или графику — объясню. <kbd>Shift</kbd>+клик — в чат · <kbd>Esc</kbd></span>
+  <button type="button" id="aiCursorOff">Выйти</button>
 </div>
 
 <!-- explain popover -->

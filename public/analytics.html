@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hisob AI — аналитика</title>
+<link rel="stylesheet" href="/assets/styles.css">
+<link rel="stylesheet" href="/assets/hisob.css">
+<script src="/assets/icons.js"></script>
+<script src="/assets/finance.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+<script src="/assets/analytics-ui.js"></script>
+<script src="/assets/analytics-ai.js" defer></script>
+</head>
+<body class="ax-page">
+<header class="ax-top">
+  <div class="ax-brand"><span class="mark"><svg viewBox="0 0 24 24" class="i" style="stroke:#fff;width:14px;height:14px"><use href="#i-mark"/></svg></span><b>Hisob AI</b><span>аналитика</span></div>
+  <span class="spacer"></span>
+  <button type="button" class="btn btn-ghost btn-sm" id="axClose">Закрыть окно</button>
+</header>
+<main id="axRoot" class="ax-root"></main>
+<script>
+const params = new URLSearchParams(location.search);
+let view = params.get('view') || 'overview';
+let payload = null;
+try { payload = JSON.parse(sessionStorage.getItem('hisob-analytics') || 'null'); } catch {}
+const vat = payload?.vat || { pay: 40612341, simp: 29916482, save: 10695859 };
+const co = payload?.co || { name: '«BARAKA NON» MCHJ', period: 'октябрь 2026' };
+window.__AX_VAT = vat;
+window.__AX_CO = co;
+let S = null;
+
+function render(v) {
+  view = v || 'overview';
+  if (view === 'overview') view = 'cashflow';
+  history.replaceState(null, '', '?view=' + view);
+  HisobAnalytics.killCharts();
+  axRoot.innerHTML = HisobAnalytics.dashHtml(view, S, vat, co, { popout: false });
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    try { HisobAnalytics.paint(view, S, vat); }
+    catch (e) { console.error('analytics paint', e); axRoot.insertAdjacentHTML('beforeend', '<p class="hint-s">График: ' + e.message + '</p>'); }
+  }));
+  axRoot.querySelectorAll('[data-ax-view]').forEach(b => b.onclick = () => render(b.dataset.axView));
+  axRoot.querySelectorAll('[data-opp-act]').forEach(b => b.onclick = () => {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage({ type: 'hisob-opp', action: b.dataset.oppAct }, location.origin);
+      window.opener.focus();
+    }
+  });
+}
+document.getElementById('axClose').onclick = () => window.close();
+axRoot.innerHTML = '<p style="padding:40px" class="muted">XGBoost загружает 3 месяца истории и прогноз ноября…</p>';
+(window.FINANCE.ensure ? window.FINANCE.ensure() : Promise.resolve()).then(() => {
+  S = window.FINANCE.snapshot(vat);
+  window.__AX_S = S;
+  if (!window.Chart) {
+    axRoot.innerHTML = '<p style="padding:40px">Chart.js не загрузился. Проверьте интернет и обновите страницу.</p>';
+  } else {
+    render(view);
+  }
+}).catch(e => {
+  axRoot.innerHTML = '<p style="padding:40px">Не удалось загрузить прогноз: ' + e.message + '</p>';
+});
+</script>
+</body>
+</html>

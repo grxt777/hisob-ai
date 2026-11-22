@@ -2,3 +2,6 @@
 node_modules/
 .playwright-mcp/
 data/
+
+# Local-only Telegram report bot (not pushed)
+lib/telegram-bot.js

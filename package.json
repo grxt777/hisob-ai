@@ -5,7 +5,9 @@
   "scripts": {
     "start": "node server.js",
     "mcp": "node mcp-server.js",
-    "test:mcp": "node test/mcp-server.test.mjs"
+    "test": "node --test test/tools.test.mjs test/forecast-books.test.mjs test/forecast-xgb.test.mjs test/api-smoke.test.mjs test/docs-create.test.mjs",
+    "test:mcp": "node test/mcp-server.test.mjs",
+    "test:all": "npm test && npm run test:mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
