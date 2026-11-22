@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hisob AI — XGBoost trade forecast for next calendar month (by day + category).
+"""Office AI — XGBoost trade forecast for next calendar month (by day + category).
 
 History dow uses JS Date.getDay() (Sun=0 … Sat=6). Features and recursion stay on that
 convention. Expenses use a hybrid: calendar obligations (аренда/НДС/зарплата/…) +

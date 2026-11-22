@@ -26,7 +26,7 @@ ok('forged initData rejected', verifyInitData(forged) === null);
 ok('expired initData rejected', verifyInitData(old) === null);
 
 ok('/healthz', (await fetch(BASE + '/healthz').then(r => r.json())).ok === true);
-ok('/tg serves the app', /Hisob AI/.test(await fetch(BASE + '/tg').then(r => r.text())));
+ok('/tg serves the app', /Office AI/.test(await fetch(BASE + '/tg').then(r => r.text())));
 const saved = await fetch(BASE + '/api/docs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Тестовый документ', kind: 'записка', md: '# Тест', source: 'tg' }) }).then(r => r.json());
 ok('doc saved with server id', /^doc-/.test(saved.doc?.id));
 const list = await fetch(BASE + '/api/docs').then(r => r.json());

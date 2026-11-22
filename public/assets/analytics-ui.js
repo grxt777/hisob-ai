@@ -1,4 +1,4 @@
-// Hisob AI — dense visual analytics (charts + insights, not spreadsheets).
+// Office AI — dense visual analytics (charts + insights, not spreadsheets).
 (function (global) {
   const mln = n => (n / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
   const fmt = n => Math.round(n).toLocaleString('ru-RU');
@@ -105,7 +105,7 @@
     };
     return `<div class="ax-hero">
       <div>
-        <div class="ax-kicker">Hisob AI · аналитика · ${S.opsCount} операций</div>
+        <div class="ax-kicker">Office AI · аналитика · ${S.opsCount} операций</div>
         <h1>${esc(v.title)}</h1>
         <p>${esc(co.name || '')} · ${esc(S.period || 'октябрь 2026')} · ${esc(v.sub)}</p>
       </div>

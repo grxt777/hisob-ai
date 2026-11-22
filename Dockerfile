@@ -1,4 +1,4 @@
-# Hisob AI on Railway. The Playwright image already has Chromium and all its system libraries.
+# Office AI on Railway. The Playwright image already has Chromium and all its system libraries.
 FROM mcr.microsoft.com/playwright:v1.65.1-noble
 
 WORKDIR /app

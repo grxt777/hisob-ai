@@ -1,4 +1,4 @@
-// Hisob AI — workspace prototype.
+// Office AI — workspace prototype.
 // The manager plans, the bookkeeper / lawyer / analyst do the work on the canvas with their cursors.
 // All numbers are computed from window.DEMO / synced Soliq·1C·Didox books — nothing is invented.
 const $ = s => document.querySelector(s);
@@ -112,7 +112,7 @@ function renderTree() {
 
 // ---------- browser tabs (open docs like Chrome / Cursor) ----------
 function tabMeta(id) {
-  if (id == null) return { id: null, nm: 'Hisob AI — рабочее пространство', ic: 'globe' };
+  if (id == null) return { id: null, nm: 'Office AI — рабочее пространство', ic: 'globe' };
   const item = DOCS.flatMap(g => g.items).find(x => x.id === id);
   if (item) return { id, nm: item.nm, ic: item.ic || 'file' };
   if (CREATED[id]) return { id, nm: CREATED[id].title, ic: 'file' };
@@ -304,7 +304,7 @@ const applicationDoc = () => letterDoc({
   to: `В государственную налоговую инспекцию<br>от ${CO.name}<br>ИНН ${CO.inn}`,
   body: `<p>Прошу применять упрощённый порядок исчисления налога на добавленную стоимость по ставке 6% в соответствии с Указом Президента Республики Узбекистан УП-100, начиная с первого числа месяца, следующего за месяцем подачи заявления.</p>
     <p>Вид деятельности: производство и торговля хлебобулочными изделиями. Оборот за ${CO.period}: ${fmt(C.sb)} сум без НДС.</p>
-    <p>Подготовлено Hisob AI на основании ${D.sales.length + D.purchases.length} электронных счетов-фактур. Перед подачей требуется проверка и подпись ЭЦП руководителя.</p>`,
+    <p>Подготовлено Office AI на основании ${D.sales.length + D.purchases.length} электронных счетов-фактур. Перед подачей требуется проверка и подпись ЭЦП руководителя.</p>`,
 });
 
 async function openDoc(id) {
@@ -475,7 +475,7 @@ function ecpPackHtml() {
       <h2>Готово к вашей ЭЦП</h2>
       <p class="muted">Агент заполнил формы. Дальше только вы: подпись и отправка. Без вашего разрешения ничего не уходит в налоговую.</p>
       <div class="steps">${steps.map((s, i) => `<div class="step ${s.ok ? 'on' : ''}"><span class="n">${i + 1}</span><div><b>${esc(s.t)}</b><div class="muted">${s.ok ? 'готово' : 'ждёт вас'}</div></div></div>`).join('')}</div>
-      <div class="stop">${icon('shield', 'sm')} <b>Стоп-линия:</b> Hisob AI не подписывает и не отправляет. Кнопка «Отправить» в my.soliq.uz — только после вашей ЭЦП.</div>
+      <div class="stop">${icon('shield', 'sm')} <b>Стоп-линия:</b> Office AI не подписывает и не отправляет. Кнопка «Отправить» в my.soliq.uz — только после вашей ЭЦП.</div>
       <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" data-ecp="prepare">${icon('send', 'sm')}Подготовить кабинет</button>
         <button class="btn btn-outline btn-sm" data-ecp="xlsx">Скачать Excel</button>
@@ -535,7 +535,7 @@ async function runEcpAction(act) {
       cancel: 'Закрыть',
       html: `<p>Форма расчёта НДС и заявление заполнены в черновике кабинета.</p>
         <ul><li>НДС к уплате: <b>${fmt(C.pay)}</b> сум</li><li>Альтернатива 6%: <b>${fmt(C.simp)}</b> сум</li><li>Отправка <b>заблокирована</b> до ЭЦП руководителя</li></ul>
-        <p class="muted">Hisob AI на этом останавливается — дальше только человек.</p>`,
+        <p class="muted">Office AI на этом останавливается — дальше только человек.</p>`,
     });
     setStatus('Ждёт подписи ЭЦП');
     aiMsg('<p>Кабинет подготовлен. Я остановился <b>до ЭЦП</b>. Когда подпишете — отправка ваша.</p>');
@@ -1216,7 +1216,7 @@ function localDraftDocument(s) {
     : isMemo ? 'Служебная записка · черновик'
     : 'Письмо · черновик';
   const body = isApp
-    ? `>> В государственную налоговую инспекцию\n>> от ${CO.name}\n>> ИНН ${CO.inn}\n\n# ЗАЯВЛЕНИЕ\n## о переходе на упрощённый порядок исчисления НДС\n\nПрошу применять упрощённый порядок исчисления НДС по ставке 6% в соответствии с УП-100, начиная с первого числа месяца, следующего за месяцем подачи.\n\nВид деятельности: производство и торговля хлебобулочными изделиями.\nОборот за ${CO.period}: ${fmt(C.sb)} сум без НДС.\n\nЧерновик Hisob AI — перед подачей сверить официальную форму и подписать ЭЦП.\n\nРуководитель ____________\n«___» __________ 20__`
+    ? `>> В государственную налоговую инспекцию\n>> от ${CO.name}\n>> ИНН ${CO.inn}\n\n# ЗАЯВЛЕНИЕ\n## о переходе на упрощённый порядок исчисления НДС\n\nПрошу применять упрощённый порядок исчисления НДС по ставке 6% в соответствии с УП-100, начиная с первого числа месяца, следующего за месяцем подачи.\n\nВид деятельности: производство и торговля хлебобулочными изделиями.\nОборот за ${CO.period}: ${fmt(C.sb)} сум без НДС.\n\nЧерновик Office AI — перед подачей сверить официальную форму и подписать ЭЦП.\n\nРуководитель ____________\n«___» __________ 20__`
     : `>> Кому: ________\n>> От кого: ${CO.name} · ИНН ${CO.inn}\n\n# ${title.replace(' · черновик', '')}\n\nТекст черновика (офлайн-режим). Уточните детали в чате при подключении AI — перепишу полностью.\n\nТема: ${s.slice(0, 120)}\n\nРуководитель ____________\n«___» __________ 20__`;
   return { title, kind, body };
 }

@@ -1,4 +1,4 @@
-// Hisob AI — finance books + XGBoost forecast (bundle from /api/finance/bundle).
+// Office AI — finance books + XGBoost forecast (bundle from /api/finance/bundle).
 window.FINANCE = (() => {
   const fmt = n => Math.round(n).toLocaleString('ru-RU');
   let bundle = window.__FINANCE_BUNDLE || null;

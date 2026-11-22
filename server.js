@@ -1,4 +1,4 @@
-// Hisob AI — tiny server: static files + /api/chat (OpenRouter, tool loop).
+// Office AI — tiny server: static files + /api/chat (OpenRouter, tool loop).
 // Run: node server.js  →  http://localhost:5180
 // .env: OPENROUTER_API_KEY, OPENROUTER_MODEL (z-ai/glm-5.3-flash), OPENROUTER_PROVIDER (relace/fp4)
 //
@@ -133,7 +133,7 @@ function unsupported(text, sources) {
 async function llm(messages, toolDefs) {
   // Model is fixed (no model fallbacks). The provider is preferred; if it is down, OpenRouter serves the same model elsewhere.
   const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY, 'X-Title': 'Hisob AI' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY, 'X-Title': 'Office AI' },
     body: JSON.stringify({ model: MODEL, provider: { order: [PROVIDER], allow_fallbacks: true }, messages, temperature: 0, reasoning: { effort: 'low' }, usage: { include: true }, max_tokens: 3000, ...(toolDefs ? { tools: toolDefs, tool_choice: 'auto' } : {}) }),
   });
   const d = await r.json();
@@ -233,7 +233,7 @@ async function runTurn(messages, docs, stats, tg = false) {
   return { reply, actions: acts, toolResults };
 }
 
-const EXPLAIN_SYS = `Ты — ИИ-курсор в Hisob AI (бухгалтерия малого бизнеса в Узбекистане). Пользователь кликнул элемент на экране.
+const EXPLAIN_SYS = `Ты — ИИ-курсор в Office AI (бухгалтерия малого бизнеса в Узбекистане). Пользователь кликнул элемент на экране.
 Объясни простым языком, 3–6 предложений:
 1) что это за показатель / блок и как считается;
 2) что значит текущее значение (если видно) — хорошо или плохо и почему;
@@ -456,7 +456,7 @@ http.createServer(async (req, res) => {
     const file = await readFile(filePath);
     res.writeHead(200, { 'Content-Type': TYPES[extname(filePath)] || 'application/octet-stream' }); res.end(file);
   } catch { res.writeHead(404); res.end('not found'); }
-}).listen(PORT, process.env.HOST || '0.0.0.0', () => { console.log('Hisob AI → http://localhost:' + PORT); startBot().catch(e => console.log('bot:', e.message)); });
+}).listen(PORT, process.env.HOST || '0.0.0.0', () => { console.log('Office AI → http://localhost:' + PORT); startBot().catch(e => console.log('bot:', e.message)); });
 loadMcp().then(() => console.log('MCP:', mcpStatus.join('; ') || 'no servers'));
 forecast.warm().catch(e => console.error('forecast warm failed:', e.message));
 // Track our own accounts: every 6 hours re-read every post, so each post gets a history of views.

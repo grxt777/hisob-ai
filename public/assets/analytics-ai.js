@@ -1,4 +1,4 @@
-// Hisob AI — FAB in analytics window (Cash-Flow-National style: Chat + AI cursor).
+// Office AI — FAB in analytics window (Cash-Flow-National style: Chat + AI cursor).
 (function () {
   'use strict';
   const $ = (s, r = document) => r.querySelector(s);
