@@ -1294,7 +1294,8 @@ $('#startChips').querySelectorAll('button').forEach(b => b.onclick = () => handl
 // ---------- voice ----------
 let lang = 'uz-UZ', rec = null;
 const DEMO_PHRASE = { 'uz-UZ': "Oktabr oyi uchun QQS hisobotini tayyorla va qayerda ortiqcha soliq to'layotganimni ko'rsat", 'ru-RU': 'Подготовь расчёт НДС за октябрь и покажи, где я переплачиваю' };
-$('#langLbl').addEventListener('click', e => { e.stopPropagation(); lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; $('#langLbl').textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; });
+$('#langLbl').addEventListener('click', e => { if (TG_MODE) return; e.stopPropagation(); lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; $('#langLbl').textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; });
+if (TG_MODE) $('#langLbl').textContent = 'Голос';
 function listenUI(on, txt = 'Слушаю…') {
   $('#listening').hidden = !on; $('#listenTxt').textContent = txt;
   $('#composer').classList.toggle('rec', on); $('#micBtn').classList.toggle('on', on); $('#micTool').classList.toggle('rec', on);
@@ -1306,29 +1307,40 @@ async function fakeVoice() {
   await sleep(300); listenUI(false); handleText(p, true);
 }
 let mediaRec = null;
+let recTimer = null, recBusy = false;
+function micLabel(t) { const l = $('#langLbl'); if (l) l.textContent = t; }
 async function recordVoice() {
-  if (mediaRec) { mediaRec.stop(); return; }
+  if (recBusy) return;                              // still transcribing the previous one
+  if (mediaRec) { mediaRec.stop(); return; }        // second tap: stop and send
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch { return toast('Нет доступа к микрофону: разрешите его в настройках Telegram', 'mic'); }
   const chunks = [];
-  mediaRec = new MediaRecorder(stream);
+  const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find(t => window.MediaRecorder?.isTypeSupported?.(t)) || '';
+  mediaRec = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
   mediaRec.ondataavailable = e => e.data.size && chunks.push(e.data);
   mediaRec.onstop = async () => {
-    stream.getTracks().forEach(t => t.stop()); mediaRec = null;
-    listenUI(true, 'Распознаю…');
-    const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
-    const r = await fetch('/api/stt?lang=' + lang.slice(0, 2), { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob }).then(x => x.json()).catch(() => ({ error: 'сервер недоступен' }));
-    listenUI(false);
+    clearInterval(recTimer); stream.getTracks().forEach(t => t.stop()); mediaRec = null;
+    recBusy = true; $('#micBtn').classList.add('busy'); micLabel('Распознаю…'); listenUI(true, 'Распознаю…');
+    TGW?.HapticFeedback?.impactOccurred('medium');
+    const blob = new Blob(chunks, { type: chunks[0]?.type || type || 'audio/webm' });
+    const r = blob.size < 1500 ? { error: 'Слишком коротко — скажите фразу и нажмите ещё раз' }
+      : await fetch('/api/stt?lang=' + (TG_MODE ? 'auto' : lang.slice(0, 2)), { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob }).then(x => x.json()).catch(() => ({ error: 'сервер недоступен' }));
+    recBusy = false; $('#micBtn').classList.remove('busy'); micLabel(TG_MODE ? 'Голос' : (lang === 'uz-UZ' ? 'UZ' : 'RU')); listenUI(false);
     if (r.text?.trim()) handleText(r.text.trim(), true); else toast(r.error || 'Не расслышал, попробуйте ещё раз', 'mic');
   };
-  mediaRec.start(); listenUI(true, 'Говорите… нажмите микрофон ещё раз, чтобы отправить'); TGW?.HapticFeedback?.impactOccurred('light');
+  mediaRec.start(250);
+  const t0 = Date.now();
+  const tick = () => { const s = Math.floor((Date.now() - t0) / 1000); micLabel(`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`); listenUI(true, 'Говорите… нажмите ещё раз, чтобы отправить'); if (s >= 60 && mediaRec) mediaRec.stop(); };
+  tick(); recTimer = setInterval(tick, 500);
+  TGW?.HapticFeedback?.impactOccurred('light');
 }
 function startVoice() {
-  if (busy) return;
+  if (busy && !mediaRec) return;
   $('#chat').classList.add('open');
+  if (TG_MODE) return recordVoice();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return TG_MODE ? recordVoice() : fakeVoice();
+  if (!SR) return fakeVoice();
   if (rec) { rec.stop(); return; }
   rec = new SR(); rec.lang = lang; rec.interimResults = true; rec.maxAlternatives = 1;
   let final = '', failed = false;
