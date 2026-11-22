@@ -8,9 +8,9 @@ ENV NODE_ENV=production \
     PLAYWRIGHT_MCP_BROWSER=chromium \
     PLAYWRIGHT_MCP_SANDBOX=false
 
-# XGBoost cash-flow forecast (lib/forecast) runs in Python
+# XGBoost cash-flow forecast (lib/forecast) runs in Python; ffmpeg converts Mini App voice for speech-to-text
 COPY lib/forecast/requirements.txt /tmp/forecast-requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pip ffmpeg \
  && pip3 install --no-cache-dir --break-system-packages -r /tmp/forecast-requirements.txt \
  && rm -rf /var/lib/apt/lists/*
 

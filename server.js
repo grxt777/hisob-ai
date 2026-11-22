@@ -15,6 +15,7 @@ import { telegramDeep, instagramDeep, accounts, rememberAccount } from './lib/so
 import { listDocs, allDocs, saveDoc, docsVersion } from './lib/store.js';
 import { verifyInitData, sendDocument, startBot, botEnabled } from './lib/telegram.js';
 import { loadMcp, mcpToolDefs, isMcpTool, callMcp, mcpStatus } from './lib/mcp.js';
+import { transcribeOpenRouter, sttModel } from './lib/stt.js';
 import * as integrations from './lib/integrations/index.js';
 import * as forecast from './lib/forecast/index.js';
 
@@ -379,7 +380,12 @@ async function stt(req, res, lang) {
       const d = await r.json(); if (!r.ok) throw new Error(d.error?.message || 'OpenAI ' + r.status);
       return send(res, 200, { text: d.text || '' });
     }
-    return send(res, 503, { error: 'Голос в Telegram не настроен: на сервере нужен ELEVENLABS_API_KEY или OPENAI_API_KEY. Пока напишите текстом.' });
+    if (KEY) {
+      const t0 = Date.now(), r = await transcribeOpenRouter(Buffer.from(await audio.arrayBuffer()), ext, lang);
+      console.log(`stt ${Date.now() - t0}ms ${r.model || sttModel()} ${r.seconds}s audio ${Math.round(size / 1024)}KB ${audio.type} $${(r.cost || 0).toFixed(5)} -> "${r.text.slice(0, 60)}"`);
+      return send(res, 200, { text: r.text });
+    }
+    return send(res, 503, { error: 'Голос не настроен: на сервере нет ключа OpenRouter. Пока напишите текстом.' });
   } catch (e) { console.error('stt', e.message); return send(res, 502, { error: 'Не удалось распознать: ' + e.message }); }
 }
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
