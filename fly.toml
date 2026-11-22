@@ -1,0 +1,42 @@
+# Office AI on Fly.io
+# One always-on machine: the Telegram bot uses long polling, and Playwright (Chromium) + XGBoost need real CPU/RAM.
+app = "office-ai"
+primary_region = "fra"   # Frankfurt: closest well-connected region to Uzbekistan
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  DATA_DIR = "/data"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"   # bot polling and background social refresh must keep running
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "60s"
+
+# Shared document store + social history survive deploys
+[[mounts]]
+  source = "office_data"
+  destination = "/data"
+
+# Dedicated CPU so headless Chromium, XGBoost and the 3D/analytics API don't lag
+[[vm]]
+  size = "performance-2x"
+  memory = "4gb"

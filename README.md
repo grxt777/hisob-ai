@@ -60,6 +60,18 @@ node server.js                    # http://localhost:5180
 
 Голос: встроенный браузер Telegram не распознаёт речь, поэтому запись уходит на сервер (`/api/stt`). Нужен `ELEVENLABS_API_KEY` (Scribe, понимает узбекский) или `OPENAI_API_KEY` (Whisper). Без ключа мини-апп предложит писать текстом.
 
+## Деплой на Fly.io (рабочий: https://office-ai.fly.dev)
+
+Конфиг в `fly.toml`: одна машина `performance-2x` (2 выделенных vCPU, 4 ГБ) во Франкфурте, всегда включена (бот и фоновое обновление соцсетей), диск `office_data` смонтирован в `/data`.
+
+```bash
+fly volumes create office_data --app office-ai --region fra --size 3
+fly secrets set OPENROUTER_API_KEY=... TELEGRAM_BOT_TOKEN=... PUBLIC_URL=https://office-ai.fly.dev --app office-ai
+fly deploy --app office-ai --remote-only --ha=false
+```
+
+Docker на компьютере не нужен: образ собирается на серверах Fly. Пока бот работает на Fly, локально держите `BOT_POLLING=0`.
+
 ## Деплой на Railway
 
 1. **Новый проект** → Deploy from GitHub repo → `hisob-ai`. Railway сам возьмёт `Dockerfile`: образ Playwright с Chromium нужен для соцсетей и Playwright MCP.
