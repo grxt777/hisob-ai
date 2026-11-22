@@ -582,3 +582,26 @@ table.dt th{background:var(--bg-soft);font-weight:600}
 .pdm{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
 .pdm a{color:var(--ink);text-decoration:underline}
 @media (max-width:760px){.kpis{grid-template-columns:1fr 1fr}.groups,.advs{grid-template-columns:1fr}}
+
+/* Telegram Mini App: chat + mic only, documents as a bottom sheet */
+body.tg .cw{grid-template-columns:1fr;grid-template-rows:52px 1fr}
+body.tg .tools,body.tg .lp,body.tg #resetBtn,body.tg #export,body.tg #chatToggle,body.tg #chatClose,body.tg .tb-name .chip,body.tg .tb-name .muted,body.tg .tb-sep{display:none!important}
+body.tg .tb{padding:0 12px}
+body.tg .status{max-width:52vw}
+body.tg .agents{display:flex!important}
+body.tg .agent-av{width:24px;height:24px;font-size:10px}
+body.tg .chat{position:static!important;transform:none!important;width:auto!important;box-shadow:none!important;border:0;grid-column:1;min-height:0}
+body.tg .chat-h{display:none}
+body.tg .composer{margin:10px}
+body.tg #micBtn{--h:46px;padding:0 18px;background:var(--pink);color:#fff;font-size:15px}
+body.tg #micBtn.on{background:var(--ink)}
+body.tg .canvas{position:fixed;left:0;right:0;top:52px;bottom:0;z-index:150;transform:translateY(102%);transition:transform .45s var(--ease);box-shadow:var(--sh-3);border-radius:18px 18px 0 0}
+body.tg.sheet .canvas{transform:none}
+body.tg .canvas-inner{padding:12px 10px 90px}
+body.tg .frame{border-radius:14px}
+body.tg .doc{padding:20px 16px 36px}
+.sheet-x{display:none}
+body.tg .sheet-x{display:inline-flex;position:fixed;right:14px;bottom:18px;z-index:5}
+body.tg #pickBtn{display:none!important}
+body.tg .tb-home::after{content:"Hisob AI";font-weight:700;font-size:15px;letter-spacing:-.02em;margin-left:10px;white-space:nowrap}
+body.tg .tb-home{width:auto;display:flex;align-items:center}

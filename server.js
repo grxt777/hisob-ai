@@ -12,6 +12,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { queryInvoices, calculate, socialMonitor, geocode, osmBuilding } from './lib/tools.js';
 import { telegramDeep, instagramDeep, accounts, rememberAccount } from './lib/social.js';
+import { listDocs, allDocs, saveDoc, docsVersion } from './lib/store.js';
+import { verifyInitData, sendDocument, startBot, botEnabled } from './lib/telegram.js';
 import { loadMcp, mcpToolDefs, isMcpTool, callMcp, mcpStatus } from './lib/mcp.js';
 import * as integrations from './lib/integrations/index.js';
 import * as forecast from './lib/forecast/index.js';
@@ -51,14 +53,18 @@ const SYSTEM = `Ты менеджер AI-команды бухгалтерии �
 - Любая цифра (сумма, процент, ставка, срок, количество, зарплата, цена, статистика) должна быть в ДАННЫХ, в словах пользователя или в результате инструмента.
 - Нельзя писать цифры «из общих знаний», «примерно», «по рынку», вилки и оценки. Нельзя ссылаться на статьи закона и номера форм, которых нет в ДАННЫХ.
 - Если цифры нет — «Этих данных у меня нет» и какой документ загрузить, или «________» в документе.`;
+const TG = '\nПользователь в Telegram Mini App на телефоне. Когда просит документ («сделай», «пришли», «скинь») — если такой документ уже есть, сразу send_to_telegram с его id; если нет — create_document и затем send_to_telegram в том же ответе. Отвечай очень коротко.';
 const VOICE = '\nПользователь говорит голосом: ответ будет озвучен. Максимум 2 коротких предложения, без списков.';
 const EXPLAIN_KEYS = ['sb', 'sv', 'pb', 'pv', 'pay', 'simp', 'save', 'turn', 'annual', 'b2b'];
 const SECTIONS = ['sales', 'purchases', 'totals', 'regimes', 'risks'];
 const BUSINESS_TYPES = ['bakery', 'retail', 'horeca', 'beauty', 'pharmacy', 'education', 'auto', 'office', 'production', 'online'];
-const CLIENT_TOOLS = ['select_floor', 'set_unit', 'show_map', 'build_vat_report', 'open_document', 'show_deadlines', 'explain_number', 'prepare_actions', 'show_home', 'show_section', 'create_document', 'export_document', 'set_reminder', 'request_document'];
+const CLIENT_TOOLS = ['send_to_telegram', 'select_floor', 'set_unit', 'show_map', 'build_vat_report', 'open_document', 'show_deadlines', 'explain_number', 'prepare_actions', 'show_home', 'show_section', 'create_document', 'export_document', 'set_reminder', 'request_document'];
 const SERVER_TOOLS = ['query_invoices', 'calculate', 'social_monitor', 'locate_business', 'remember_social'];
 
-function tools(docs) { return baseTools(docs).concat(mcpToolDefs()); }
+function tools(docs, tg = false) {
+  const t = baseTools(docs).concat(mcpToolDefs());
+  return tg ? t.concat([{ type: 'function', function: { name: 'send_to_telegram', description: 'Отправить документ пользователю в Telegram-чат файлом. Если документа ещё нет — сначала create_document в этом же ответе, id можно не указывать (возьмётся только что созданный).', parameters: { type: 'object', properties: { id: { type: 'string', description: 'id документа' }, format: { type: 'string', enum: ['pdf', 'docx', 'xlsx'], description: 'pdf по умолчанию; xlsx — для расчёта НДС и таблиц' } }, required: [] } } }]) : t;
+}
 function baseTools(docs) {
   const fn = (name, description, properties = {}, required = []) => ({ type: 'function', function: { name, description, parameters: { type: 'object', properties, required } } });
   const S = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -143,6 +149,7 @@ function validClient(x, docs) {
   if (x.name === 'show_section') return SECTIONS.includes(x.args.section);
   if (x.name === 'create_document') return typeof x.args.body === 'string' && x.args.body.trim().length > 0;
   if (x.name === 'show_map') return ['2d', '3d'].includes(x.args.mode);
+  if (x.name === 'send_to_telegram') return !x.args.format || ['pdf', 'docx', 'xlsx'].includes(x.args.format);
   if (x.name === 'select_floor') return Number.isInteger(x.args.floor) && x.args.floor >= 1 && x.args.floor <= 200;
   if (x.name === 'export_document') return ['pdf', 'docx', 'xlsx'].includes(x.args.format);
   return true;
@@ -191,8 +198,8 @@ async function runServerTool(name, a) {
   return { result: { error: 'unknown tool' } };
 }
 
-async function runTurn(messages, docs, stats) {
-  const toolDefs = tools(docs), actions = [], toolResults = [];
+async function runTurn(messages, docs, stats, tg = false) {
+  const toolDefs = tools(docs, tg), actions = [], toolResults = [];
   let reply = '';
   for (let round = 0; round < 4; round++) {
     const r = await llm(messages, toolDefs); stats.tokens += r.tokens; stats.cost += r.cost; stats.provider = r.provider;
@@ -279,18 +286,18 @@ async function chat(req, res) {
   const question = history.filter(m => m.role === 'user').at(-1)?.content || '';
   const userText = history.filter(m => m.role === 'user').map(m => m.content).join('\n');
   const ours = accounts().filter(x => x.ours).map(x => `${x.platform} @${x.handle}${x.title ? ' (' + x.title + ')' : ''}${x.lastCheck ? ', последняя проверка ' + x.lastCheck.slice(0, 16).replace('T', ' ') : ''}`);
-  const messages = [{ role: 'system', content: SYSTEM + (j.voice ? VOICE : '') + '\n\nНАШИ СОЦСЕТИ: ' + (ours.join('; ') || 'не указаны') + '\n\nДАННЫЕ:\n' + context }, ...history];
+  const messages = [{ role: 'system', content: SYSTEM + (j.voice ? VOICE : '') + (j.tg ? TG : '') + '\n\nНАШИ СОЦСЕТИ: ' + (ours.join('; ') || 'не указаны') + '\n\nДАННЫЕ:\n' + context }, ...history];
   const stats = { tokens: 0, cost: 0, provider: '', log: [] };
   let retried = false, blocked = false;
   try {
-    let { reply, actions, toolResults } = await runTurn(messages, docs, stats);
+    let { reply, actions, toolResults } = await runTurn(messages, docs, stats, !!j.tg);
     const sources = () => context + '\n' + userText + '\n' + toolResults.join('\n');
     const docText = acts => acts.filter(a => a.name === 'create_document').map(a => a.args.body).join('\n');
     let bad = unsupported(reply + '\n' + docText(actions), sources());
     if (bad.length) { // one retry: name the numbers that are not in the data
       retried = true;
       messages.push({ role: 'assistant', content: reply || '(документ создан)' }, { role: 'user', content: `Проверка: в ответе или документе есть цифры, которых нет в ДАННЫХ, словах пользователя или результатах инструментов: ${bad.join(', ')}. Сделай заново без них (в документе вместо них «________»). Если без них нельзя — скажи, каких данных не хватает.` });
-      const again = await runTurn(messages, docs, stats);
+      const again = await runTurn(messages, docs, stats, !!j.tg);
       toolResults = toolResults.concat(again.toolResults);
       const keep = actions.filter(a => a.name !== 'create_document');
       reply = again.reply; actions = keep.concat(again.actions.filter(a => a.name === 'create_document' || !keep.some(k => k.name === a.name)));
@@ -319,9 +326,61 @@ async function chat(req, res) {
       const [ex] = actions.splice(ei, 1);
       actions.push(ex);
     }
+    // Mini App: a document the user asked for always ends up in their Telegram chat.
+    if (j.tg && !actions.some(a => a.name === 'send_to_telegram')) {
+      const src = [...actions].reverse().find(a => a.name === 'create_document' || a.name === 'open_document');
+      const wantsSend = /(пришли|скинь|отправ|скача|дай файл|yubor|tashla|jo.?nat)/i.test(question);
+      if (src && (src.name === 'create_document' || wantsSend)) {
+        const id = src.name === 'open_document' ? src.args.id : '';
+        const fmt = /(excel|эксель|xlsx)/i.test(question) ? 'xlsx' : /(word|ворд|docx)/i.test(question) ? 'docx' : id === 'vat-10' ? 'xlsx' : 'pdf';
+        actions.push({ name: 'send_to_telegram', args: { id, format: fmt } }); stats.log.push(`send_to_telegram(auto,${fmt})`);
+      }
+    }
     console.log(`chat ${Date.now() - t0}ms ${stats.provider} tok=${stats.tokens} $${stats.cost.toFixed(5)}${j.voice ? ' voice' : ''}${retried ? ' RETRY' : ''}${blocked ? ' BLOCKED' : ''} | ${question.slice(0, 70).replace(/\s+/g, ' ')} -> ${stats.log.join(', ') || 'text'}`);
     send(res, 200, { reply, actions });
   } catch (e) { console.error('openrouter', e.message); send(res, 502, { error: 'llm error' }); }
+}
+async function readJsonOrNull(req, limit) {
+  let body = '';
+  for await (const c of req) { body += c; if (body.length > limit) return null; }
+  try { return JSON.parse(body); } catch { return null; }
+}
+// Mini App → user's Telegram chat. The user id comes only from initData signed by Telegram, never from the client.
+async function tgSend(req, res) {
+  if (!botEnabled()) return send(res, 503, { error: 'бот не настроен (TELEGRAM_BOT_TOKEN)' });
+  const b = await readJsonOrNull(req, 15e6); if (!b) return send(res, 413, { error: 'файл слишком большой' });
+  const user = verifyInitData(b.initData);
+  if (!user?.id) return send(res, 401, { error: 'откройте приложение из Telegram' });
+  const buf = Buffer.from(String(b.data || ''), 'base64');
+  if (!buf.length || buf.length > 10e6) return send(res, 400, { error: 'пустой или слишком большой файл' });
+  const name = String(b.filename || 'document.pdf').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
+  try { await sendDocument(user.id, buf, name, b.caption || ''); console.log(`tg send ${name} ${Math.round(buf.length / 1024)}KB -> ${user.id}`); send(res, 200, { ok: true }); }
+  catch (e) { console.error('tg send failed', e.message); send(res, 502, { error: e.message }); }
+}
+// Speech-to-text for the Mini App (Telegram's WebView has no SpeechRecognition).
+// ELEVENLABS_API_KEY → Scribe (understands Uzbek and Russian), else OPENAI_API_KEY → Whisper.
+async function stt(req, res, lang) {
+  const chunks = []; let size = 0;
+  for await (const c of req) { size += c.length; if (size > 10e6) return send(res, 413, { error: 'запись слишком длинная' }); chunks.push(c); }
+  const audio = new Blob([Buffer.concat(chunks)], { type: req.headers['content-type'] || 'audio/webm' });
+  const ext = /mp4|m4a|aac/.test(audio.type) ? 'm4a' : /ogg/.test(audio.type) ? 'ogg' : 'webm';
+  try {
+    if (process.env.ELEVENLABS_API_KEY) {
+      const fd = new FormData(); fd.append('file', audio, 'voice.' + ext); fd.append('model_id', 'scribe_v1');
+      if (lang === 'uz' || lang === 'ru') fd.append('language_code', lang === 'uz' ? 'uzb' : 'rus');
+      const r = await fetch('https://api.elevenlabs.io/v1/speech-to-text', { method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY }, body: fd });
+      const d = await r.json(); if (!r.ok) throw new Error(d.detail?.message || 'ElevenLabs ' + r.status);
+      return send(res, 200, { text: d.text || '' });
+    }
+    if (process.env.OPENAI_API_KEY) {
+      const fd = new FormData(); fd.append('file', audio, 'voice.' + ext); fd.append('model', 'whisper-1');
+      if (lang === 'uz' || lang === 'ru') fd.append('language', lang);
+      const r = await fetch('https://api.openai.com/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: 'Bearer ' + process.env.OPENAI_API_KEY }, body: fd });
+      const d = await r.json(); if (!r.ok) throw new Error(d.error?.message || 'OpenAI ' + r.status);
+      return send(res, 200, { text: d.text || '' });
+    }
+    return send(res, 503, { error: 'Голос в Telegram не настроен: на сервере нужен ELEVENLABS_API_KEY или OPENAI_API_KEY. Пока напишите текстом.' });
+  } catch (e) { console.error('stt', e.message); return send(res, 502, { error: 'Не удалось распознать: ' + e.message }); }
 }
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
 
@@ -361,6 +420,7 @@ async function integrationsApi(req, res, url) {
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
   if (url.pathname === '/api/chat' && req.method === 'POST') return chat(req, res);
   if (url.pathname === '/api/explain' && req.method === 'POST') return explainApi(req, res);
   if (url.pathname === '/api/finance/bundle' && req.method === 'GET') {
@@ -374,6 +434,14 @@ http.createServer(async (req, res) => {
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (url.pathname.startsWith('/api/integrations')) return integrationsApi(req, res, url);
+  if (url.pathname === '/api/docs' && req.method === 'GET') {
+    const since = Number(url.searchParams.get('since'));
+    return send(res, 200, since === docsVersion() ? { version: docsVersion(), unchanged: true } : { version: docsVersion(), docs: allDocs() });
+  }
+  if (url.pathname === '/api/docs' && req.method === 'POST') { const b = await readJsonOrNull(req, 2e5); if (!b) return send(res, 400, { error: 'bad json' }); return send(res, 200, { doc: saveDoc(b), version: docsVersion() }); }
+  if (url.pathname === '/api/tg/send' && req.method === 'POST') return tgSend(req, res);
+  if (url.pathname === '/api/stt' && req.method === 'POST') return stt(req, res, url.searchParams.get('lang'));
+  if (url.pathname === '/tg' || url.pathname === '/tg/') { res.writeHead(200, { 'Content-Type': TYPES['.html'] }); return res.end(await readFile(join(ROOT, 'index.html'))); }
   if (url.pathname === '/api/social/accounts') return send(res, 200, { accounts: accounts() });
   if (url.pathname === '/api/osm/building') return send(res, 200, { building: await osmBuilding(url.searchParams.get('id')).catch(() => null) });
   if (url.pathname === '/api/geo/search') { const q = url.searchParams.get('q') || ''; return send(res, 200, { results: q.trim() ? await geocode(q).catch(() => []) : [] }); }
@@ -388,7 +456,7 @@ http.createServer(async (req, res) => {
     const file = await readFile(filePath);
     res.writeHead(200, { 'Content-Type': TYPES[extname(filePath)] || 'application/octet-stream' }); res.end(file);
   } catch { res.writeHead(404); res.end('not found'); }
-}).listen(PORT, () => console.log('Hisob AI → http://localhost:' + PORT));
+}).listen(PORT, process.env.HOST || '0.0.0.0', () => { console.log('Hisob AI → http://localhost:' + PORT); startBot().catch(e => console.log('bot:', e.message)); });
 loadMcp().then(() => console.log('MCP:', mcpStatus.join('; ') || 'no servers'));
 forecast.warm().catch(e => console.error('forecast warm failed:', e.message));
 // Track our own accounts: every 6 hours re-read every post, so each post gets a history of views.

@@ -2,6 +2,9 @@
 // The manager plans, the bookkeeper / lawyer / analyst do the work on the canvas with their cursors.
 // All numbers are computed from window.DEMO / synced Soliq·1C·Didox books — nothing is invented.
 const $ = s => document.querySelector(s);
+// Telegram Mini App: same page, only the chat + mic; documents slide up as a sheet and go to the user's chat.
+const TG_MODE = location.pathname.startsWith('/tg') || new URLSearchParams(location.search).has('tg');
+const TGW = window.Telegram?.WebApp;
 let D = window.DEMO;
 
 // ---------- company & assumptions ----------
@@ -205,6 +208,7 @@ function speak(text) {
 }
 
 function welcome() {
+  if (TG_MODE) return aiMsg(`<div class="welcome"><h3>Ассалому алейкум${TGW?.initDataUnsafe?.user?.first_name ? ', ' + esc(TGW.initDataUnsafe.user.first_name) : ''}!</h3><p>Скажите голосом или напишите, какой документ нужен: «приказ о приёме», «расчёт НДС в Excel». Сделаю и пришлю в этот чат.</p></div>`);
   aiMsg(`<div class="welcome"><h3>Ассалому алейкум!</h3><p>Я менеджер вашей AI-команды. Скажите задачу голосом или текстом, остальное сделают агенты.</p>
     <div class="tip">${icon('mic', 'sm')}<span><b>Голос</b>: говорите по-узбекски или по-русски.</span></div>
     <div class="tip">${icon('ai-cursor', 'sm')}<span><b>ИИ-курсор</b> (клавиша A): клик по цифре, KPI или графику — сразу объясню. Shift+клик — несколько мест в чат.</span></div>
@@ -542,7 +546,7 @@ async function runEcpAction(act) {
 async function runReport() {
   if (busy) return;
   if (reportDone) { openDoc('vat-10'); await typing(400); aiMsg('Расчёт за октябрь уже готов, открыл его. Кликните по цифре ИИ-курсором, если нужно объяснение.'); return; }
-  busy = true; showStart(false);
+  busy = true; showStart(false); if (TG_MODE) sheet(true);
   addDoc('Отчёты', { id: 'vat-10', nm: 'Расчёт НДС · октябрь', tag: 'черновик', cls: 'new', ic: 'sheet' });
   currentDoc = 'vat-10'; ensureTab('vat-10'); renderTree();
   if (targets.length) clearTargets();
@@ -996,13 +1000,15 @@ function confirmText({ name, args = {} }) {
     set_reminder: `Добавил напоминание на ${args.date || ''}.`,
     request_document: `Загрузите ${args.what || 'документ'}: зона загрузки слева подсвечена.`,
     show_map: `Переключил карту в ${String(args.mode || '').toUpperCase()}.`,
-    show_geo: '', show_social: '',
+    show_geo: '', show_social: '', send_to_telegram: '',
     select_floor: `Выбрал ${args.floor} этаж: он подсвечен на 3D-модели, ниже — план этажа.`, set_unit: `Записал помещение «${args.name || ''}»${args.area_m2 ? `, ${args.area_m2} м²` : ''}.`,
   }[name] ?? '';
 }
 // Tools the model can call (definitions live in server.js). Anything with consequences goes through the permission card.
 async function runAction({ name, args = {} }) {
+  if (name === 'send_to_telegram') { while (busy) await sleep(300); return sendToTelegram(args); }
   if (busy && name !== 'show_deadlines') return aiMsg('<p>Агенты ещё работают, сделаю это сразу после них.</p>');
+  if (TG_MODE && ['build_vat_report', 'open_document', 'show_section', 'explain_number', 'highlight_rows', 'show_geo', 'show_map', 'show_social', 'select_floor', 'create_document'].includes(name)) sheet(true);
   if (name === 'build_vat_report') return runReport();
   if (name === 'open_document') {
     if (args.id === 'vat-10' && !reportDone) return runReport();
@@ -1075,9 +1081,13 @@ function mdToHtml(md) {
 }
 const createdDocHtml = id => `<div class="doc"><div class="letter"><span class="chip draft">Черновик · проверьте перед подписью</span>${mdToHtml(CREATED[id].md)}</div></div>`;
 async function createDocument(a) {
-  const id = a.id && CREATED[a.id] ? a.id : 'doc-' + (++docSeq);
-  CREATED[id] = { title: String(a.title || 'Документ').slice(0, 80), kind: a.kind || 'другое', md: String(a.body || '') };
+  const draft = { title: String(a.title || 'Документ').slice(0, 80), kind: a.kind || 'другое', md: String(a.body || '') };
+  let id = a.id && CREATED[a.id] ? a.id : null;
+  try { const r = await fetch('/api/docs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...draft, source: TG_MODE ? 'tg' : 'pc' }) }).then(x => x.json()); id = r.doc.id; docsVer = r.version; }
+  catch { id = id || 'local-' + (++docSeq); }
+  CREATED[id] = draft;
   lastCreated = id;
+  if (TG_MODE) sheet(true);
   addDoc('Созданные', { id, nm: CREATED[id].title, tag: CREATED[id].kind, cls: 'new', ic: 'file' });
   closePop(); if (targets.length) clearTargets();
   currentDoc = id; ensureTab(id); renderTree(); showStart(false);
@@ -1119,31 +1129,51 @@ async function toDocx(root) {
   });
   return Packer.toBlob(new Document({ sections: [{ properties: {}, children: kids }] }));
 }
-async function exportDoc(id, format = 'pdf') {
+async function exportBlob(id, format = 'pdf') {
   const known = id && (CREATED[id] || DOCS.flatMap(g => g.items).some(x => x.id === id));
   const target = known ? id : (lastCreated || currentDoc);
-  if (!target) return aiMsg('<p>Нечего экспортировать: сначала откройте или создайте документ.</p>');
-  if (target === 'vat-10' && !reportDone) { aiMsg('<p>Сначала соберу расчёт.</p>'); return runReport(); }
+  if (!target) { aiMsg('<p>Нечего экспортировать: сначала откройте или создайте документ.</p>'); return null; }
+  if (target === 'vat-10' && !reportDone) { aiMsg('<p>Сначала соберу расчёт.</p>'); await runReport(); }
   if (target !== currentDoc) { openDoc(target); await sleep(250); }
+  if (target === 'vat-10' && format === 'docx') format = 'pdf';
   const item = DOCS.flatMap(g => g.items).find(x => x.id === currentDoc);
-  const name = (item ? item.nm : 'Документ').replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '') || 'Документ';
-  const root = page.querySelector('.doc'); if (!root) return;
+  const title = item ? item.nm : 'Документ';
+  const name = title.replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '') || 'Документ';
+  const root = page.querySelector('.doc'); if (!root) return null;
+  if (format === 'xlsx') {
+    let wb;
+    if (currentDoc === 'vat-10') { makeXlsx(); wb = window._wb; }
+    else { const t = root.querySelector('table'); if (!t) format = 'pdf'; else wb = XLSX.utils.table_to_book(t); }
+    if (wb) return { blob: new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name: name + '.xlsx', title };
+  }
+  if (format === 'docx') return { blob: await toDocx(root), name: name + '.docx', title };
+  root.classList.add('exporting');
+  try {
+    const blob = await html2pdf().set({ margin: [12, 12, 12, 12], image: { type: 'jpeg', quality: 0.95 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }, pagebreak: { mode: ['css', 'legacy'] } }).from(root).outputPdf('blob');
+    return { blob, name: name + '.pdf', title };
+  } finally { root.classList.remove('exporting'); }
+}
+async function exportDoc(id, format = 'pdf') {
   setStatus(`Готовлю ${format.toUpperCase()}…`, true);
   try {
-    if (format === 'xlsx') {
-      if (currentDoc === 'vat-10') { makeXlsx(); XLSX.writeFile(window._wb, name + '.xlsx'); }
-      else { const t = root.querySelector('table'); if (!t) { aiMsg('<p>В этом документе нет таблицы, сохраню в PDF.</p>'); return exportDoc(currentDoc, 'pdf'); } XLSX.writeFile(XLSX.utils.table_to_book(t), name + '.xlsx'); }
-    } else if (format === 'docx') {
-      download(await toDocx(root), name + '.docx');
-    } else {
-      root.classList.add('exporting');
-      await html2pdf().set({ margin: [12, 12, 12, 12], filename: name + '.pdf', image: { type: 'jpeg', quality: 0.95 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }, pagebreak: { mode: ['css', 'legacy'] } }).from(root).save();
-      root.classList.remove('exporting');
-    }
-    toast(`Скачан ${name}.${format}`, 'download');
-    logMsg('m', `скачан файл ${name}.${format}`);
+    const r = await exportBlob(id, format); if (!r) return;
+    download(r.blob, r.name);
+    toast(`Скачан ${r.name}`, 'download'); logMsg('m', `скачан файл ${r.name}`);
   } catch (e) { console.error(e); aiMsg('<p>Не получилось сформировать файл. Попробуйте другой формат.</p>'); }
-  setStatus('Готово');
+  finally { setStatus('Готово'); }
+}
+const toB64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+async function sendToTelegram({ id, format = 'pdf' } = {}) {
+  if (!TGW?.initData) { aiMsg('<p>Отправка в Telegram работает, когда приложение открыто из бота. Пока скачаю файл.</p>'); return exportDoc(id, format); }
+  setStatus('Отправляю в Telegram', true);
+  try {
+    const r = await exportBlob(id, format || 'pdf'); if (!r) return;
+    const res = await fetch('/api/tg/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: TGW.initData, filename: r.name, data: await toB64(r.blob), caption: r.title }) }).then(x => x.json());
+    if (!res.ok) throw new Error(res.error || 'ошибка');
+    aiMsg(`<p>Отправил «${esc(r.title)}» в чат ✅</p>`); TGW.HapticFeedback?.notificationOccurred('success');
+    setTimeout(() => sheet(false), 1400);
+  } catch (e) { aiMsg(`<p>Не удалось отправить: ${esc(e.message)}</p>`); TGW?.HapticFeedback?.notificationOccurred('error'); }
+  finally { setStatus('Готово'); }
 }
 
 // ---------- other screen tools ----------
@@ -1244,11 +1274,11 @@ async function askBackend(voice = false) {
     `Сегодня: ${new Date().toLocaleDateString('ru-RU')}.`,
     geoContext(),
     ...Object.values(SOCIAL).map(x => `Соцсеть ${x.platform} @${x.handle || x.url} (${x.title || ''}): подписчики ${x.followers ?? '—'}; ${x.stats ? `разобрано ${x.stats.posts_analyzed} постов, средние ${x.stats.metric} ${x.stats['avg_' + x.stats.metric]}, медиана ${x.stats['median_' + x.stats.metric]}, вовлечённость ${x.stats.engagement_pct}%, постов в неделю ${x.stats.posts_per_week}; лучший формат ${x.stats.by_type[0]?.key} (${x.stats.by_type[0]?.avg}); лучший день ${x.stats.by_weekday[0]?.key}` : 'только публичные счётчики'}${x.advice?.summary ? '; вывод маркетолога: ' + x.advice.summary : ''}`),
-    `Неизвестно (не называть цифры): рыночные цены, расходы на внешнего бухгалтера, прибыль после всех затрат, данные других компаний. ФИО руководителя — неизвестно.`,
+    `Неизвестно (не называть цифры): рыночные цены, расходы на внешнего бухгалтера, прибыль после всех затрат, данные других компаний. ФИО руководителя, адрес, банковские реквизиты, список сотрудников — неизвестны.`,
     `Зарплатный фонд за октябрь (аванс из банка): 28000000 сум — это факт из банковской выписки, полный ФОТ за месяц может быть выше.`,
-    ...(Object.keys(CREATED).length ? ['Созданные документы (id, название, текст):', ...Object.entries(CREATED).map(([k, v]) => `[${k}] ${v.title}:\n${v.md.slice(0, 1500)}`)] : []),
+    ...(Object.keys(CREATED).length ? ['Созданные документы (id, название, текст):', ...Object.entries(CREATED).slice(-10).map(([k, v]) => `[${k}] ${v.title}:\n${v.md.slice(0, 1500)}`)] : []),
   ].join('\n');
-  const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx, voice, docs: DOCS.flatMap(g => g.items).map(({ id, nm }) => ({ id, nm })), messages: chatHist.slice(-10) }) });
+  const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx, voice, tg: TG_MODE, docs: DOCS.flatMap(g => g.items).map(({ id, nm }) => ({ id, nm })), messages: chatHist.slice(-10) }) });
   if (!r.ok) return null;
   return await r.json();
 }
@@ -1275,17 +1305,36 @@ async function fakeVoice() {
   for (let i = 0; i <= p.length; i += 3) { $('#listenTxt').textContent = p.slice(0, i) || 'Слушаю…'; await sleep(40); }
   await sleep(300); listenUI(false); handleText(p, true);
 }
+let mediaRec = null;
+async function recordVoice() {
+  if (mediaRec) { mediaRec.stop(); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return toast('Нет доступа к микрофону: разрешите его в настройках Telegram', 'mic'); }
+  const chunks = [];
+  mediaRec = new MediaRecorder(stream);
+  mediaRec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  mediaRec.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop()); mediaRec = null;
+    listenUI(true, 'Распознаю…');
+    const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
+    const r = await fetch('/api/stt?lang=' + lang.slice(0, 2), { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob }).then(x => x.json()).catch(() => ({ error: 'сервер недоступен' }));
+    listenUI(false);
+    if (r.text?.trim()) handleText(r.text.trim(), true); else toast(r.error || 'Не расслышал, попробуйте ещё раз', 'mic');
+  };
+  mediaRec.start(); listenUI(true, 'Говорите… нажмите микрофон ещё раз, чтобы отправить'); TGW?.HapticFeedback?.impactOccurred('light');
+}
 function startVoice() {
   if (busy) return;
   $('#chat').classList.add('open');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return fakeVoice();
+  if (!SR) return TG_MODE ? recordVoice() : fakeVoice();
   if (rec) { rec.stop(); return; }
   rec = new SR(); rec.lang = lang; rec.interimResults = true; rec.maxAlternatives = 1;
   let final = '', failed = false;
   rec.onresult = e => { final = [...e.results].map(r => r[0].transcript).join(' '); $('#listenTxt').textContent = final; };
   rec.onerror = () => { failed = true; };
-  rec.onend = () => { rec = null; listenUI(false); if (final.trim()) handleText(final, true); else if (failed) fakeVoice(); };
+  rec.onend = () => { rec = null; listenUI(false); if (final.trim()) handleText(final, true); else if (failed) (TG_MODE ? recordVoice() : fakeVoice()); };
   listenUI(true); rec.start();
 }
 $('#micBtn').onclick = startVoice; $('#micTool').onclick = startVoice; $('#startMic').onclick = startVoice;
@@ -1496,6 +1545,33 @@ addEventListener('keydown', e => {
   else if (e.key === 'Escape') { closePop(); if (targets.length) clearTargets(); else setTool('select'); }
 });
 
+let docsVer = -1;
+async function syncDocs(first = false) {
+  try {
+    const r = await fetch('/api/docs?since=' + docsVer).then(x => x.json());
+    if (r.unchanged) return; docsVer = r.version;
+    for (const d of r.docs) {
+      const was = CREATED[d.id];
+      if (was && was.md === d.md && was.title === d.title) continue;
+      CREATED[d.id] = { title: d.title, kind: d.kind, md: d.md };
+      if (!was && !first) logMsg(d.source === 'tg' ? 'm' : 'm', `новый документ «${d.title}»${d.source === 'tg' ? ' из Telegram' : ' с компьютера'}`);
+      const g = DOCS.find(x => x.g === 'Созданные'), item = { id: d.id, nm: d.title, tag: d.kind, cls: 'new', ic: 'file' };
+      if (first) { if (g) g.items.unshift(item); else DOCS.splice(1, 0, { g: 'Созданные', items: [item] }); } else addDoc('Созданные', item);
+      if (currentDoc === d.id && !busy) openDoc(d.id);
+    }
+    renderTree();
+  } catch {}
+}
+syncDocs(true); setInterval(() => { if (!busy) syncDocs(); }, 4000);
+
+// ---- Telegram Mini App shell ----
+function sheet(on) { if (!TG_MODE) return; document.body.classList.toggle('sheet', on); if (on) TGW?.BackButton?.show(); else { TGW?.BackButton?.hide(); closePop(); } }
+if (TG_MODE) {
+  document.body.classList.add('tg');
+  TGW?.ready(); TGW?.expand(); TGW?.setHeaderColor?.('#ffffff'); TGW?.BackButton?.onClick(() => sheet(false));
+  const x = document.createElement('button'); x.className = 'sheet-x btn btn-primary btn-sm'; x.innerHTML = icon('x', 'sm') + 'Закрыть'; x.onclick = () => sheet(false);
+  $('#canvas').append(x);
+}
 welcome();
 parkCursors();
 

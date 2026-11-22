@@ -12,6 +12,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@playwright/mcp": "^0.0.86",
-    "playwright": "^1.65.1"
+    "playwright": "1.65.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
